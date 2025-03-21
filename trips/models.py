@@ -7,7 +7,7 @@ class Trip(models.Model):
     dropoff_location = models.CharField(max_length=255)
     current_cycle_hours = models.FloatField() # Estimated number of hours spent in the current location
     start_time = models.DateTimeField(default=timezone.now)  # Trip start time
-    distance = models.FloatField(null=True, blank=True)  # Total distance traveled in km
+    distance = models.FloatField(null=True, blank=True)  # Total distance traveled in miles
     estimated_duration = models.FloatField(null=True, blank=True)  # Estimated duration in hours
     created_at = models.DateTimeField(auto_now_add=True)
 
