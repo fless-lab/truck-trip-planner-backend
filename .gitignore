@@ -1,3 +1,22 @@
 .qodo
+
 /venv
-/.env
+
+# Python files
+__pycache__/
+*.pyc
+
+# SQLite database
+db.sqlite3
+
+# Env file
+.env
+
+# Temporary files
+*.log
+*.pot
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite3
