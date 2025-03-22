@@ -8,6 +8,7 @@ class LogEntrySerializer(serializers.ModelSerializer):
 
 class TripSerializer(serializers.ModelSerializer):
     logs = LogEntrySerializer(many=True, read_only=True)
+    start_time = serializers.DateTimeField(required=False)
 
     class Meta:
         model = Trip
