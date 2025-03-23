@@ -90,7 +90,7 @@ class TripCreateView(generics.CreateAPIView):
         in_initial_driving_phase = distance_to_pickup > 0
         pickup_completed = False
 
-        #  Step 1 : Simulation of the trip (including initial driving phase)
+        # Step 1: Simulation of the trip (including initial driving phase)
         while current_distance < total_distance:
             # Here we add a new window of 14 hours if necessary
             if not trip_state["last_duty_start_time"]:
@@ -107,12 +107,13 @@ class TripCreateView(generics.CreateAPIView):
                         buffer_end_time = current_time
                         location = (f"Conduite de {trip.current_location} à {trip.pickup_location}" if in_initial_driving_phase
                                     else "Conduite")
-                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location)
+                        # Ajouter la distance cumulée au log
+                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance)
                         driving_buffer_start = None
                         driving_buffer_minutes = 0
 
                     end_time = current_time + timedelta(hours=MINIMUM_REST_HOURS)
-                    self.add_log_entry(log_entries, trip, current_time, end_time, 'SLEEPER_BERTH', "Repos de 10h après 14h de service")
+                    self.add_log_entry(log_entries, trip, current_time, end_time, 'SLEEPER_BERTH', "Repos de 10h après 14h de service", current_distance)
                     current_time = end_time
                     trip_state["last_duty_start_time"] = None
                     break
@@ -125,12 +126,12 @@ class TripCreateView(generics.CreateAPIView):
                         buffer_end_time = current_time
                         location = (f"Conduite de {trip.current_location} à {trip.pickup_location}" if in_initial_driving_phase
                                     else "Conduite")
-                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location)
+                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance)
                         driving_buffer_start = None
                         driving_buffer_minutes = 0
 
                     end_time = current_time + timedelta(hours=RESTART_HOURS)
-                    self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures")
+                    self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance)
                     current_time = end_time
                     total_on_duty_hours = 0
                     trip_state["last_duty_start_time"] = None
@@ -141,13 +142,13 @@ class TripCreateView(generics.CreateAPIView):
                     # Saving the buffer if it exists
                     if driving_buffer_minutes > 0:
                         buffer_end_time = current_time
-                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', f"Conduite de {trip.current_location} à {trip.pickup_location}")
+                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', f"Conduite de {trip.current_location} à {trip.pickup_location}", current_distance)
                         driving_buffer_start = None
                         driving_buffer_minutes = 0
 
-                    #  Pickup (1h in service, no driving)
+                    # Pickup (1h in service, no driving)
                     pickup_end_time = current_time + timedelta(hours=1)
-                    self.add_log_entry(log_entries, trip, current_time, pickup_end_time, 'ON_DUTY_NOT_DRIVING', f"Ramassage à {trip.pickup_location}")
+                    self.add_log_entry(log_entries, trip, current_time, pickup_end_time, 'ON_DUTY_NOT_DRIVING', f"Ramassage à {trip.pickup_location}", current_distance)
                     current_time = pickup_end_time
                     total_on_duty_hours += 1
                     pickup_completed = True
@@ -156,7 +157,7 @@ class TripCreateView(generics.CreateAPIView):
                     # Let's check the cycle after pickup
                     if total_on_duty_hours >= MAX_CYCLE_HOURS:
                         end_time = current_time + timedelta(hours=RESTART_HOURS)
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures")
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance)
                         current_time = end_time
                         total_on_duty_hours = 0
                         trip_state["last_duty_start_time"] = None
@@ -166,34 +167,34 @@ class TripCreateView(generics.CreateAPIView):
                     time_in_window = (current_time - window_start).total_seconds() / 3600
                     if time_in_window >= MAX_DUTY_HOURS_PER_WINDOW:
                         end_time = current_time + timedelta(hours=MINIMUM_REST_HOURS)
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'SLEEPER_BERTH', "Repos de 10h après 14h de service")
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'SLEEPER_BERTH', "Repos de 10h après 14h de service", current_distance)
                         current_time = end_time
                         trip_state["last_duty_start_time"] = None
                         break
 
                     continue
 
-                #  Pause of 30 minutes after 8 hours of driving
+                # Pause of 30 minutes after 8 hours of driving
                 if driving_since_last_break >= MAX_DRIVING_HOURS_BEFORE_BREAK:
                     # Saving driving buffer if it exists
                     if driving_buffer_minutes > 0:
                         buffer_end_time = current_time
                         location = (f"Conduite de {trip.current_location} à {trip.pickup_location}" if in_initial_driving_phase
                                     else "Conduite")
-                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location)
+                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance)
                         driving_buffer_start = None
                         driving_buffer_minutes = 0
 
                     end_time = current_time + timedelta(minutes=30)
-                    self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Pause de 30 minutes")
+                    self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Pause de 30 minutes", current_distance)
                     current_time = end_time
                     driving_since_last_break = 0
                     total_on_duty_hours += 0.5
                     
-                    # Verifiying the cycle after the break
+                    # Verifying the cycle after the break
                     if total_on_duty_hours >= MAX_CYCLE_HOURS:
                         end_time = current_time + timedelta(hours=RESTART_HOURS)
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures")
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance)
                         current_time = end_time
                         total_on_duty_hours = 0
                         trip_state["last_duty_start_time"] = None
@@ -216,12 +217,12 @@ class TripCreateView(generics.CreateAPIView):
                                 buffer_end_time = current_time
                                 location = (f"Conduite de {trip.current_location} à {trip.pickup_location}" if in_initial_driving_phase
                                             else "Conduite")
-                                self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location)
+                                self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance)
                                 driving_buffer_start = None
                                 driving_buffer_minutes = 0
 
                             end_time = current_time + timedelta(hours=RESTART_HOURS)
-                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures")
+                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance)
                             current_time = end_time
                             total_on_duty_hours = 0
                             trip_state["last_duty_start_time"] = None
@@ -232,14 +233,14 @@ class TripCreateView(generics.CreateAPIView):
                             buffer_end_time = current_time
                             location = (f"Conduite de {trip.current_location} à {trip.pickup_location}" if in_initial_driving_phase
                                         else "Conduite")
-                            self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location)
+                            self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance)
                             driving_buffer_start = None
                             driving_buffer_minutes = 0
                             
                         cycle_limit_time = current_time + timedelta(minutes=minutes_to_cycle_limit)
                         location = (f"Conduite de {trip.current_location} à {trip.pickup_location} jusqu'à limite du cycle" if in_initial_driving_phase
                                     else "Conduite jusqu'à limite du cycle")
-                        self.add_log_entry(log_entries, trip, current_time, cycle_limit_time, 'DRIVING', location)
+                        self.add_log_entry(log_entries, trip, current_time, cycle_limit_time, 'DRIVING', location, current_distance)
                         current_time = cycle_limit_time
                         current_distance += minutes_to_cycle_limit * (AVERAGE_SPEED / 60)
                         window_driving_hours += minutes_to_cycle_limit / 60
@@ -248,7 +249,7 @@ class TripCreateView(generics.CreateAPIView):
                         
                         # Redémarrage du cycle
                         end_time = current_time + timedelta(hours=RESTART_HOURS)
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures")
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance)
                         current_time = end_time
                         total_on_duty_hours = 0
                         trip_state["last_duty_start_time"] = None
@@ -269,13 +270,13 @@ class TripCreateView(generics.CreateAPIView):
                             buffer_end_time = current_time
                             location = (f"Conduite de {trip.current_location} à {trip.pickup_location}" if in_initial_driving_phase
                                         else "Conduite")
-                            self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location)
+                            self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance)
                             driving_buffer_start = None
                             driving_buffer_minutes = 0
 
                         location = (f"Conduite de {trip.current_location} à {trip.pickup_location} jusqu'à la pause" if in_initial_driving_phase
                                     else "Conduite jusqu'à la pause")
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'DRIVING', location)
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'DRIVING', location, current_distance)
                         current_time = end_time
                         current_distance += minutes_to_break * (AVERAGE_SPEED / 60)
                         window_driving_hours += hours_to_break
@@ -285,7 +286,7 @@ class TripCreateView(generics.CreateAPIView):
                         # Vérification du cycle après cette période de conduite
                         if total_on_duty_hours >= MAX_CYCLE_HOURS:
                             end_time = current_time + timedelta(hours=RESTART_HOURS)
-                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures")
+                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance)
                             current_time = end_time
                             total_on_duty_hours = 0
                             trip_state["last_duty_start_time"] = None
@@ -293,7 +294,7 @@ class TripCreateView(generics.CreateAPIView):
 
                         # Pause de 30 minutes
                         end_time = current_time + timedelta(minutes=30)
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Pause de 30 minutes")
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Pause de 30 minutes", current_distance)
                         current_time = end_time
                         driving_since_last_break = 0
                         total_on_duty_hours += 0.5
@@ -301,7 +302,7 @@ class TripCreateView(generics.CreateAPIView):
                         # Vérification du cycle après la pause
                         if total_on_duty_hours >= MAX_CYCLE_HOURS:
                             end_time = current_time + timedelta(hours=RESTART_HOURS)
-                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures")
+                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance)
                             current_time = end_time
                             total_on_duty_hours = 0
                             trip_state["last_duty_start_time"] = None
@@ -317,13 +318,13 @@ class TripCreateView(generics.CreateAPIView):
                         buffer_end_time = current_time
                         location = (f"Conduite de {trip.current_location} à {trip.pickup_location}" if in_initial_driving_phase
                                     else "Conduite")
-                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location)
+                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance)
                         driving_buffer_start = None
                         driving_buffer_minutes = 0
 
                     location = (f"Conduite de {trip.current_location} à {trip.pickup_location} jusqu'au ravitaillement" if in_initial_driving_phase
                                 else "Conduite jusqu'au ravitaillement")
-                    self.add_log_entry(log_entries, trip, current_time, end_time, 'DRIVING', location)
+                    self.add_log_entry(log_entries, trip, current_time, end_time, 'DRIVING', location, current_distance)
                     current_time = end_time
                     current_distance += minutes_to_fuel * (AVERAGE_SPEED / 60)
                     window_driving_hours += hours_to_fuel
@@ -333,22 +334,24 @@ class TripCreateView(generics.CreateAPIView):
                     # Vérification du cycle après cette période de conduite
                     if total_on_duty_hours >= MAX_CYCLE_HOURS:
                         end_time = current_time + timedelta(hours=RESTART_HOURS)
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures")
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance)
                         current_time = end_time
                         total_on_duty_hours = 0
                         trip_state["last_duty_start_time"] = None
                         break
 
                     fueling_stops_made.add(next_fueling_mile)
-                    end_time = current_time + timedelta(minutes=30)
-                    self.add_log_entry(log_entries, trip, current_time, end_time, 'ON_DUTY_NOT_DRIVING', "Arrêt de ravitaillement")
+                    # Changement : Réduire l'arrêt de ravitaillement à 15 minutes
+                    end_time = current_time + timedelta(minutes=15)
+                    self.add_log_entry(log_entries, trip, current_time, end_time, 'ON_DUTY_NOT_DRIVING', "Arrêt de ravitaillement", current_distance)
                     current_time = end_time
-                    total_on_duty_hours += 0.5
+                    # Changement : Ajuster le temps en service (15 minutes = 0.25 heure)
+                    total_on_duty_hours += 0.25
                     
                     # Vérification du cycle après le ravitaillement
                     if total_on_duty_hours >= MAX_CYCLE_HOURS:
                         end_time = current_time + timedelta(hours=RESTART_HOURS)
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures")
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance)
                         current_time = end_time
                         total_on_duty_hours = 0
                         trip_state["last_duty_start_time"] = None
@@ -386,12 +389,12 @@ class TripCreateView(generics.CreateAPIView):
                             buffer_end_time = current_time + timedelta(minutes=1)
                             location = (f"Conduite de {trip.current_location} à {trip.pickup_location}" if in_initial_driving_phase
                                         else "Conduite")
-                            self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location)
+                            self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance)
                             driving_buffer_start = None
                             driving_buffer_minutes = 0
 
                         end_time = current_time + timedelta(minutes=1) + timedelta(hours=RESTART_HOURS)
-                        self.add_log_entry(log_entries, trip, current_time + timedelta(minutes=1), end_time, 'OFF_DUTY', "Redémarrage de 34 heures")
+                        self.add_log_entry(log_entries, trip, current_time + timedelta(minutes=1), end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance)
                         current_time = end_time
                         total_on_duty_hours = 0
                         trip_state["last_duty_start_time"] = None
@@ -407,7 +410,7 @@ class TripCreateView(generics.CreateAPIView):
                     buffer_end_time = current_time + timedelta(minutes=1)
                     location = (f"Conduite de {trip.current_location} à {trip.pickup_location}" if in_initial_driving_phase
                                 else "Conduite")
-                    self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location)
+                    self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance)
                     driving_buffer_start = buffer_end_time
                     driving_buffer_minutes = 0
 
@@ -419,28 +422,28 @@ class TripCreateView(generics.CreateAPIView):
                         buffer_end_time = current_time
                         location = (f"Conduite de {trip.current_location} à {trip.pickup_location}" if in_initial_driving_phase
                                     else "Conduite")
-                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location)
+                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance)
                         driving_buffer_start = None
                         driving_buffer_minutes = 0
 
                     time_to_window_end = MAX_DUTY_HOURS_PER_WINDOW - (current_time - window_start).total_seconds() / 3600
                     if time_to_window_end > 0:
                         end_time = current_time + timedelta(hours=time_to_window_end)
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'ON_DUTY_NOT_DRIVING', "Fin de fenêtre de 14h")
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'ON_DUTY_NOT_DRIVING', "Fin de fenêtre de 14h", current_distance)
                         current_time = end_time
                         total_on_duty_hours += time_to_window_end
                         
                         # Vérification du cycle après cette période de service
                         if total_on_duty_hours >= MAX_CYCLE_HOURS:
                             end_time = current_time + timedelta(hours=RESTART_HOURS)
-                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures")
+                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance)
                             current_time = end_time
                             total_on_duty_hours = 0
                             trip_state["last_duty_start_time"] = None
                             break
                     
                     end_time = current_time + timedelta(hours=MINIMUM_REST_HOURS)
-                    self.add_log_entry(log_entries, trip, current_time, end_time, 'SLEEPER_BERTH', "Repos de 10h après 11h de conduite")
+                    self.add_log_entry(log_entries, trip, current_time, end_time, 'SLEEPER_BERTH', "Repos de 10h après 11h de conduite", current_distance)
                     current_time = end_time
                     trip_state["last_duty_start_time"] = None
                     break
@@ -452,12 +455,12 @@ class TripCreateView(generics.CreateAPIView):
                 # Enregistrer le buffer de conduite s'il existe
                 if driving_buffer_minutes > 0:
                     buffer_end_time = current_time
-                    self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', "Conduite")
+                    self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', "Conduite", current_distance)
                     driving_buffer_start = None
                     driving_buffer_minutes = 0
 
                 end_time = current_time + timedelta(hours=RESTART_HOURS)
-                self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures")
+                self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance)
                 current_time = end_time
                 total_on_duty_hours = 0
                 trip_state["last_duty_start_time"] = None
@@ -469,33 +472,36 @@ class TripCreateView(generics.CreateAPIView):
                     # Enregistrer le buffer de conduite s'il existe
                     if driving_buffer_minutes > 0:
                         buffer_end_time = current_time
-                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', "Conduite")
+                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', "Conduite", current_distance)
                         driving_buffer_start = None
                         driving_buffer_minutes = 0
 
                     end_time = current_time + timedelta(hours=MINIMUM_REST_HOURS)
-                    self.add_log_entry(log_entries, trip, current_time, end_time, 'SLEEPER_BERTH', "Repos de 10h avant dépôt")
+                    self.add_log_entry(log_entries, trip, current_time, end_time, 'SLEEPER_BERTH', "Repos de 10h avant dépôt", current_distance)
                     current_time = end_time
                     trip_state["last_duty_start_time"] = None
 
             # Enregistrer le buffer de conduite restant avant le dépôt
             if driving_buffer_minutes > 0:
                 buffer_end_time = current_time
-                self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', "Conduite")
+                self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', "Conduite", current_distance)
                 driving_buffer_start = None
                 driving_buffer_minutes = 0
 
             dropoff_end_time = current_time + timedelta(hours=1)
-            self.add_log_entry(log_entries, trip, current_time, dropoff_end_time, 'ON_DUTY_NOT_DRIVING', f"Dépôt à {trip.dropoff_location}")
+            self.add_log_entry(log_entries, trip, current_time, dropoff_end_time, 'ON_DUTY_NOT_DRIVING', f"Dépôt à {trip.dropoff_location}", current_distance)
             total_on_duty_hours += 1
 
         # Sauvegarde des logs
         LogEntry.objects.bulk_create(log_entries)
 
-    def add_log_entry(self, log_entries, trip, start_time, end_time, duty_status, location):
-        """Ajoute une entrée de log, gérant les cas où elle traverse minuit."""
+    def add_log_entry(self, log_entries, trip, start_time, end_time, duty_status, location, distance):
+        """Ajoute une entrée de log, gérant les cas où elle traverse minuit, et inclut la distance cumulée."""
         if start_time >= end_time:
             return
+
+        # Ajouter la distance cumulée à la description de la localisation
+        location_with_distance = f"{location} ({distance:.1f} miles)"
 
         if start_time.date() == end_time.date():
             log_entries.append(LogEntry(
@@ -504,7 +510,7 @@ class TripCreateView(generics.CreateAPIView):
                 duty_status=duty_status,
                 start_time=start_time.time(),
                 end_time=end_time.time(),
-                location=location
+                location=location_with_distance
             ))
         else:
             midnight = datetime.combine(start_time.date() + timedelta(days=1), time.min, tzinfo=start_time.tzinfo)
@@ -514,7 +520,7 @@ class TripCreateView(generics.CreateAPIView):
                 duty_status=duty_status,
                 start_time=start_time.time(),
                 end_time=time(23, 59, 59),
-                location=location
+                location=location_with_distance
             ))
             
             # Gestion des logs pour les jours intermédiaires si nécessaire
@@ -526,7 +532,7 @@ class TripCreateView(generics.CreateAPIView):
                     duty_status=duty_status,
                     start_time=time(0, 0, 0),
                     end_time=time(23, 59, 59),
-                    location=location
+                    location=location_with_distance
                 ))
                 current_date += timedelta(days=1)
                 
@@ -536,7 +542,7 @@ class TripCreateView(generics.CreateAPIView):
                 duty_status=duty_status,
                 start_time=time(0, 0, 0),
                 end_time=end_time.time(),
-                location=location
+                location=location_with_distance
             ))
 
 class TripDetailView(generics.RetrieveAPIView):
