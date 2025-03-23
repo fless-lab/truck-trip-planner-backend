@@ -27,7 +27,12 @@ SECRET_KEY = os.getenv('SECRET_KEY')
 DEBUG = os.getenv('DEBUG') == 'True'
 
 
-ALLOWED_HOSTS = ['localhost', '127.0.0.1']
+ALLOWED_HOSTS = [
+    'localhost', 
+    '127.0.0.1',
+    'truck-trip-planner-backend.onrender.com', 
+    '.onrender.com',
+]
 
 
 # Application definition
