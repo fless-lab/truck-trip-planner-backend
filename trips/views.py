@@ -6,18 +6,13 @@ from rest_framework.response import Response
 from dotenv import load_dotenv
 from .models import Trip, LogEntry
 from .serializers import TripSerializer
+from .constants import (
+    AVERAGE_SPEED, MAX_DRIVING_HOURS_PER_WINDOW, MAX_DUTY_HOURS_PER_WINDOW,
+    MAX_DRIVING_HOURS_BEFORE_BREAK, MAX_CYCLE_HOURS, FUELING_INTERVAL,
+    MINIMUM_REST_HOURS, RESTART_HOURS, CITIES, CITIES_WITH_COORDS
+)
 
 load_dotenv()
-
-# HOS Constants
-AVERAGE_SPEED = 60 #Here we suppose the 
-MAX_DRIVING_HOURS_PER_WINDOW = 11
-MAX_DUTY_HOURS_PER_WINDOW = 14
-MAX_DRIVING_HOURS_BEFORE_BREAK = 8
-MAX_CYCLE_HOURS = 70
-FUELING_INTERVAL = 1000
-MINIMUM_REST_HOURS = 10
-RESTART_HOURS = 34
 
 class TripListView(generics.ListAPIView):
     queryset = Trip.objects.all()
