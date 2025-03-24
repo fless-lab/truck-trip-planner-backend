@@ -97,48 +97,86 @@ class TripCreateView(generics.CreateAPIView):
         return distance_to_pickup, distance_to_dropoff
     
     def _calculate_route_distance(self, start_coords, end_coords, api_key):
-        """Calcule la distance entre deux points en utilisant l'API OpenRouteService."""
+        """Calcule la distance entre deux points en utilisant l'API OpenRouteService.
+        
+        Utilise le profil 'driving-hgv' pour les camions et prend en compte les restrictions routières.
+        En cas d'échec, utilise geodesic comme solution de secours.
+        
+        Args:
+            start_coords (list): Coordonnées [lat, lon] du point de départ
+            end_coords (list): Coordonnées [lat, lon] du point d'arrivée
+            api_key (str): Clé API OpenRouteService
+            
+        Returns:
+            float: Distance en miles
+        """
         import requests
         
-       
+        # OpenRouteService attend les coordonnées au format [lon, lat]
         start = [start_coords[1], start_coords[0]]
         end = [end_coords[1], end_coords[0]]
-        print("start : ",start)
-        print("end : ",end)
-       
+        
+        # Configuration de l'API OpenRouteService pour les camions (HGV)
         url = "https://api.openrouteservice.org/v2/directions/driving-hgv"
         headers = {
             'Accept': 'application/json, application/geo+json, application/gpx+xml, img/png; charset=utf-8',
             'Authorization': api_key,
             'Content-Type': 'application/json; charset=utf-8'
         }
+        
+        # Paramètres spécifiques pour les camions
         body = {
             "coordinates": [start, end],
-            "profile": "driving-hgv", 
-            "preference": "recommended",
-            "units": "mi", 
-            "language": "fr-fr"
+            "profile": "driving-hgv",  # Profil spécifique pour les camions
+            "preference": "recommended",  # Itinéraire recommandé
+            "units": "mi",  # Unités en miles
+            "language": "fr-fr",
+            # Paramètres optionnels pour les camions
+            "options": {
+                "vehicle_type": "hgv",  # Type de véhicule: poids lourd
+                "profile_params": {
+                    "weightings": {
+                        "no_drive_zones": {
+                            "driving-hgv": true  # Éviter les zones interdites aux camions
+                        }
+                    },
+                    "restrictions": {
+                        "height": 4.0,  # Hauteur en mètres
+                        "width": 2.55,  # Largeur en mètres
+                        "length": 16.5,  # Longueur en mètres
+                        "weight": 40.0,  # Poids en tonnes
+                        "axle_load": 11.5  # Charge par essieu en tonnes
+                    }
+                }
+            }
         }
         
         try:
-            print("Req : ",url, body, headers)
+            # Appel à l'API OpenRouteService
             response = requests.post(url, json=body, headers=headers)
-            response.raise_for_status() 
+            response.raise_for_status()  # Lève une exception en cas d'erreur HTTP
             
-           
+            # Traitement de la réponse
             data = response.json()
-            print("data : ",data)
-           
+            
+            # Extraction de la distance en miles (conversion de mètres en miles)
             distance_miles = data['routes'][0]['summary']['distance'] / 1609.34
+            
+            # Extraction du temps de trajet en heures (conversion de secondes en heures)
+            duration_hours = data['routes'][0]['summary']['duration'] / 3600
+            
+            # On pourrait stocker ces informations supplémentaires dans le modèle Trip si nécessaire
+            
             return distance_miles
             
         except requests.exceptions.RequestException as e:
-           
+            # En cas d'erreur avec l'API, utiliser geodesic comme solution de secours
             print(f"Error calculating distance with OpenRouteService: {e}")
-           
+            
+            # Calcul de la distance à vol d'oiseau comme solution de secours
             from geopy.distance import geodesic
-            distance_km = geodesic((start_coords[0], start_coords[1]), (end_coords[0], end_coords[1])).miles
-            return distance_km
+            distance_miles = geodesic((start_coords[0], start_coords[1]), (end_coords[0], end_coords[1])).miles
+            return distance_miles
 
     def generate_eld_logs(self, trip, distance_to_pickup, distance_to_dropoff, current_cycle_hours):
         current_time = trip.start_time
