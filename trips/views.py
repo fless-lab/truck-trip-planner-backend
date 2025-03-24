@@ -56,9 +56,89 @@ class TripCreateView(generics.CreateAPIView):
         self.generate_eld_logs(trip, distance_to_pickup, distance_to_dropoff, current_cycle_hours)
 
     def calculate_distance(self, current_location, pickup_location, dropoff_location):
-        distance_to_pickup = 0 if current_location == pickup_location else 200
-        distance_to_dropoff = 1200 if dropoff_location == "Denver, CO" else 2800
+        import os
+        import requests
+        from .constants import CITIES_WITH_COORDS
+        print("here is the details : ")
+       
+        api_key = os.environ.get('MAP_API_KEY')
+        if not api_key:
+            raise ValueError("MAP_API_KEY is not set in environment variables")
+        
+       
+        if current_location not in CITIES_WITH_COORDS:
+            raise ValueError(f"Current location '{current_location}' not found in CITIES_WITH_COORDS")
+        if pickup_location not in CITIES_WITH_COORDS:
+            raise ValueError(f"Pickup location '{pickup_location}' not found in CITIES_WITH_COORDS")
+        if dropoff_location not in CITIES_WITH_COORDS:
+            raise ValueError(f"Dropoff location '{dropoff_location}' not found in CITIES_WITH_COORDS")
+        
+       
+        if current_location == pickup_location:
+            distance_to_pickup = 0
+        else:
+           
+            current_coords = CITIES_WITH_COORDS[current_location]
+            pickup_coords = CITIES_WITH_COORDS[pickup_location]
+            
+           
+            distance_to_pickup = self._calculate_route_distance(current_coords, pickup_coords, api_key)
+        
+       
+        pickup_coords = CITIES_WITH_COORDS[pickup_location]
+        dropoff_coords = CITIES_WITH_COORDS[dropoff_location]
+        
+        print(f"Pickup coord : {pickup_coords}");
+        print(f"Dropoff coord : {dropoff_coords}");
+        
+       
+        distance_to_dropoff = self._calculate_route_distance(pickup_coords, dropoff_coords, api_key)
+        
         return distance_to_pickup, distance_to_dropoff
+    
+    def _calculate_route_distance(self, start_coords, end_coords, api_key):
+        """Calcule la distance entre deux points en utilisant l'API OpenRouteService."""
+        import requests
+        
+       
+        start = [start_coords[1], start_coords[0]]
+        end = [end_coords[1], end_coords[0]]
+        print("start : ",start)
+        print("end : ",end)
+       
+        url = "https://api.openrouteservice.org/v2/directions/driving-hgv"
+        headers = {
+            'Accept': 'application/json, application/geo+json, application/gpx+xml, img/png; charset=utf-8',
+            'Authorization': api_key,
+            'Content-Type': 'application/json; charset=utf-8'
+        }
+        body = {
+            "coordinates": [start, end],
+            "profile": "driving-hgv", 
+            "preference": "recommended",
+            "units": "mi", 
+            "language": "fr-fr"
+        }
+        
+        try:
+            print("Req : ",url, body, headers)
+            response = requests.post(url, json=body, headers=headers)
+            response.raise_for_status() 
+            
+           
+            data = response.json()
+            print("data : ",data)
+           
+            distance_miles = data['routes'][0]['summary']['distance'] / 1609.34
+            return distance_miles
+            
+        except requests.exceptions.RequestException as e:
+           
+            print(f"Error calculating distance with OpenRouteService: {e}")
+           
+            from geopy.distance import geodesic
+            distance_km = geodesic((start_coords[0], start_coords[1]), (end_coords[0], end_coords[1])).miles
+            return distance_km
 
     def generate_eld_logs(self, trip, distance_to_pickup, distance_to_dropoff, current_cycle_hours):
         current_time = trip.start_time
