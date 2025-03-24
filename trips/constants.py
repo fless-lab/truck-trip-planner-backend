@@ -9,6 +9,8 @@ FUELING_INTERVAL = 1000
 MINIMUM_REST_HOURS = 10  
 RESTART_HOURS = 34  
 
+# Coordinate format: [latitude, longitude]
+# Note: The OpenRouteService API expects [longitude, latitude], but the conversion is done in _calculate_route_distance (view.py file)
 CITIES_WITH_COORDS = {
     "New York, NY": [40.7128, -74.0060],
     "Los Angeles, CA": [34.0522, -118.2437],
