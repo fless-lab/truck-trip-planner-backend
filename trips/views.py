@@ -41,7 +41,10 @@ class TripCreateView(generics.CreateAPIView):
             current_location, pickup_location, dropoff_location
         )
         total_distance = distance_to_pickup + distance_to_dropoff
-        estimated_duration = total_distance / AVERAGE_SPEED
+        
+        # Utilisation des durées calculées par l'API OpenRouteService
+        # La durée totale est la somme des durées pour aller au point de ramassage et du point de ramassage à la destination
+        estimated_duration = self.duration_to_pickup + self.duration_to_dropoff
 
         trip = serializer.save(
             distance=total_distance,
@@ -73,31 +76,35 @@ class TripCreateView(generics.CreateAPIView):
         if dropoff_location not in CITIES_WITH_COORDS:
             raise ValueError(f"Dropoff location '{dropoff_location}' not found in CITIES_WITH_COORDS")
         
-       
+        # Initialisation des variables pour stocker les durées
+        duration_to_pickup = 0
+        
         if current_location == pickup_location:
             distance_to_pickup = 0
         else:
-           
             current_coords = CITIES_WITH_COORDS[current_location]
             pickup_coords = CITIES_WITH_COORDS[pickup_location]
             
-           
-            distance_to_pickup = self._calculate_route_distance(current_coords, pickup_coords, api_key)
+            # Récupération de la distance et de la durée
+            distance_to_pickup, duration_to_pickup = self._calculate_route_distance(current_coords, pickup_coords, api_key)
         
-       
         pickup_coords = CITIES_WITH_COORDS[pickup_location]
         dropoff_coords = CITIES_WITH_COORDS[dropoff_location]
         
         print(f"Pickup coord : {pickup_coords}");
         print(f"Dropoff coord : {dropoff_coords}");
         
-       
-        distance_to_dropoff = self._calculate_route_distance(pickup_coords, dropoff_coords, api_key)
+        # Récupération de la distance et de la durée
+        distance_to_dropoff, duration_to_dropoff = self._calculate_route_distance(pickup_coords, dropoff_coords, api_key)
+        
+        # Stockage des durées dans des attributs de l'instance pour utilisation dans perform_create
+        self.duration_to_pickup = duration_to_pickup
+        self.duration_to_dropoff = duration_to_dropoff
         
         return distance_to_pickup, distance_to_dropoff
     
     def _calculate_route_distance(self, start_coords, end_coords, api_key):
-        """Calcule la distance entre deux points en utilisant l'API OpenRouteService.
+        """Calcule la distance et la durée entre deux points en utilisant l'API OpenRouteService.
         
         Utilise le profil 'driving-hgv' pour les camions et prend en compte les restrictions routières.
         En cas d'échec, utilise geodesic comme solution de secours.
@@ -108,7 +115,8 @@ class TripCreateView(generics.CreateAPIView):
             api_key (str): Clé API OpenRouteService
             
         Returns:
-            float: Distance en miles
+            tuple: (distance_miles, duration_hours) - Distance en miles et durée en heures
+                   basées sur les données réelles de l'API OpenRouteService
         """
         import requests
         
@@ -169,11 +177,10 @@ class TripCreateView(generics.CreateAPIView):
             distance_miles = data['routes'][0]['summary']['distance']
             
             # Extraction du temps de trajet en heures (conversion de secondes en heures)
+            # Utilisation directe de la durée fournie par l'API au lieu de calculer avec AVERAGE_SPEED
             duration_hours = data['routes'][0]['summary']['duration'] / 3600
             
-            # On pourrait stocker ces informations supplémentaires dans le modèle Trip si nécessaire
-            
-            return distance_miles
+            return distance_miles, duration_hours
             
         except requests.exceptions.RequestException as e:
             # En cas d'erreur avec l'API, utiliser geodesic comme solution de secours
@@ -182,7 +189,11 @@ class TripCreateView(generics.CreateAPIView):
             # Calcul de la distance à vol d'oiseau comme solution de secours
             from geopy.distance import geodesic
             distance_miles = geodesic((start_coords[0], start_coords[1]), (end_coords[0], end_coords[1])).miles
-            return distance_miles
+            # Estimation de la durée basée sur la vitesse moyenne en cas d'échec
+            from .constants import AVERAGE_SPEED
+            duration_hours = distance_miles / AVERAGE_SPEED
+            
+            return distance_miles, duration_hours
 
     def generate_eld_logs(self, trip, distance_to_pickup, distance_to_dropoff, current_cycle_hours):
         current_time = trip.start_time
