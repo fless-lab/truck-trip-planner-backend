@@ -101,6 +101,10 @@ class TripCreateView(generics.CreateAPIView):
         self.duration_to_pickup = duration_to_pickup
         self.duration_to_dropoff = duration_to_dropoff
         
+        # Stockage des segments de route pour les deux parties du trajet
+        self.segments_to_pickup = self.route_segments if current_location != pickup_location else []
+        self.segments_to_dropoff = self.route_segments
+        
         return distance_to_pickup, distance_to_dropoff
     
     def _calculate_route_distance(self, start_coords, end_coords, api_key):
@@ -180,6 +184,30 @@ class TripCreateView(generics.CreateAPIView):
             # Utilisation directe de la durée fournie par l'API au lieu de calculer avec AVERAGE_SPEED
             duration_hours = data['routes'][0]['summary']['duration'] / 3600
             
+            # Extraction des segments de l'itinéraire pour un traitement plus granulaire
+            route_segments = []
+            if 'segments' in data['routes'][0]:
+                for segment in data['routes'][0]['segments']:
+                    # Pour chaque segment, extraire les étapes (steps)
+                    steps = []
+                    if 'steps' in segment:
+                        for step in segment['steps']:
+                            steps.append({
+                                'distance': step['distance'],  # en miles
+                                'duration': step['duration'] / 3600,  # conversion en heures
+                                'instruction': step['instruction'],
+                                'name': step['name']
+                            })
+                    
+                    route_segments.append({
+                        'distance': segment['distance'],  # en miles
+                        'duration': segment['duration'] / 3600,  # conversion en heures
+                        'steps': steps
+                    })
+            
+            # Stockage des segments dans des attributs de l'instance pour utilisation dans generate_eld_logs
+            self.route_segments = route_segments
+            
             return distance_miles, duration_hours
             
         except requests.exceptions.RequestException as e:
@@ -198,6 +226,42 @@ class TripCreateView(generics.CreateAPIView):
     def generate_eld_logs(self, trip, distance_to_pickup, distance_to_dropoff, current_cycle_hours):
         current_time = trip.start_time
         current_distance = 0
+        
+        # Récupération des segments de route calculés par l'API OpenRouteService
+        segments_to_pickup = self.segments_to_pickup
+        segments_to_dropoff = self.segments_to_dropoff
+        
+        # Récupération des durées calculées par l'API OpenRouteService
+        duration_to_pickup = self.duration_to_pickup
+        duration_to_dropoff = self.duration_to_dropoff
+        
+        # Création d'une liste combinée de tous les steps du trajet pour une approche plus granulaire
+        all_steps = []
+        
+        # Ajout des steps pour aller au point de ramassage
+        for segment in segments_to_pickup:
+            for step in segment['steps']:
+                all_steps.append({
+                    'distance': step['distance'],
+                    'duration': step['duration'],
+                    'instruction': step['instruction'],
+                    'name': step['name'],
+                    'phase': 'pickup',
+                    'description': f"Conduite de {trip.current_location} à {trip.pickup_location}: {step['instruction']} sur {step['name']}"
+                })
+        
+        # Ajout des steps pour aller du point de ramassage à la destination
+        for segment in segments_to_dropoff:
+            for step in segment['steps']:
+                all_steps.append({
+                    'distance': step['distance'],
+                    'duration': step['duration'],
+                    'instruction': step['instruction'],
+                    'name': step['name'],
+                    'phase': 'dropoff',
+                    'description': f"Conduite de {trip.pickup_location} à {trip.dropoff_location}: {step['instruction']} sur {step['name']}"
+                })
+        # Utilisation des steps pour une approche plus granulaire
         total_on_duty_hours = current_cycle_hours
         fueling_stops_made = set()
         log_entries = []
@@ -209,7 +273,11 @@ class TripCreateView(generics.CreateAPIView):
         total_distance = distance_to_pickup + distance_to_dropoff
         in_initial_driving_phase = distance_to_pickup > 0
         pickup_completed = False
-
+        
+        # Initialisation du compteur pour suivre la progression dans les steps
+        current_step_index = 0
+        
+        # Boucle principale utilisant les steps granulaires au lieu des segments complets
         while current_distance < total_distance:
             if not trip_state["last_duty_start_time"]:
                 trip_state["last_duty_start_time"] = current_time
@@ -452,21 +520,63 @@ class TripCreateView(generics.CreateAPIView):
                     driving_buffer_minutes = 0
                     continue
 
-                remaining_minutes = min(
-                    (MAX_DRIVING_HOURS_PER_WINDOW - window_driving_hours) * 60,
-                    (MAX_DUTY_HOURS_PER_WINDOW - time_in_window) * 60,
-                    (total_distance - current_distance) / (AVERAGE_SPEED / 60),
-                    (MAX_CYCLE_HOURS - total_on_duty_hours) * 60
-                )
-                
-                if remaining_minutes <= 0:
-                    break
-
-                end_time = current_time + timedelta(minutes=1)
-                current_distance += AVERAGE_SPEED / 60
-                window_driving_hours += 1 / 60
-                driving_since_last_break += 1 / 60
-                total_on_duty_hours += 1 / 60
+                # Vérifier s'il reste des steps à parcourir
+                if current_step_index < len(all_steps):
+                    current_step = all_steps[current_step_index]
+                    
+                    # Calculer le temps de conduite maximum autorisé en minutes
+                    max_driving_minutes = min(
+                        (MAX_DRIVING_HOURS_PER_WINDOW - window_driving_hours) * 60,
+                        (MAX_DUTY_HOURS_PER_WINDOW - time_in_window) * 60,
+                        (MAX_CYCLE_HOURS - total_on_duty_hours) * 60,
+                        (MAX_DRIVING_HOURS_BEFORE_BREAK - driving_since_last_break) * 60
+                    )
+                    
+                    # Convertir la durée du step en minutes
+                    step_duration_minutes = current_step['duration'] * 60
+                    
+                    # Prendre le minimum entre le temps de conduite maximum autorisé et la durée du step
+                    driving_minutes = min(max_driving_minutes, step_duration_minutes, 60)  # Maximum 1h par itération
+                    
+                    if driving_minutes <= 0:
+                        break
+                    
+                    # Calculer la proportion du step qui sera parcourue
+                    proportion = driving_minutes / step_duration_minutes if step_duration_minutes > 0 else 0
+                    
+                    # Calculer la distance parcourue proportionnellement
+                    distance_covered = current_step['distance'] * proportion
+                    
+                    # Mettre à jour le temps et la distance
+                    end_time = current_time + timedelta(minutes=driving_minutes)
+                    current_distance += distance_covered
+                    window_driving_hours += driving_minutes / 60
+                    driving_since_last_break += driving_minutes / 60
+                    total_on_duty_hours += driving_minutes / 60
+                    
+                    # Si le step est complètement parcouru, passer au suivant
+                    if proportion >= 1 or abs(proportion - 1) < 0.001:  # Tenir compte des erreurs d'arrondi
+                        current_step_index += 1
+                else:
+                    # Si tous les steps ont été parcourus mais que la distance totale n'est pas atteinte
+                    # (peut arriver en raison d'arrondis), utiliser la vitesse moyenne pour le reste
+                    remaining_distance = total_distance - current_distance
+                    remaining_minutes = min(
+                        (MAX_DRIVING_HOURS_PER_WINDOW - window_driving_hours) * 60,
+                        (MAX_DUTY_HOURS_PER_WINDOW - time_in_window) * 60,
+                        remaining_distance / (AVERAGE_SPEED / 60),
+                        (MAX_CYCLE_HOURS - total_on_duty_hours) * 60,
+                        60  # Maximum 1h par itération
+                    )
+                    
+                    if remaining_minutes <= 0:
+                        break
+                    
+                    end_time = current_time + timedelta(minutes=remaining_minutes)
+                    current_distance += (AVERAGE_SPEED / 60) * remaining_minutes
+                    window_driving_hours += remaining_minutes / 60
+                    driving_since_last_break += remaining_minutes / 60
+                    total_on_duty_hours += remaining_minutes / 60
 
                 if total_on_duty_hours >= MAX_CYCLE_HOURS:
                     if round(total_on_duty_hours, 2) >= MAX_CYCLE_HOURS:
@@ -485,14 +595,34 @@ class TripCreateView(generics.CreateAPIView):
                         trip_state["last_duty_start_time"] = None
                         break
 
+                # Gestion du buffer de conduite avec informations détaillées de l'étape
                 if driving_buffer_start is None:
                     driving_buffer_start = current_time
-                driving_buffer_minutes += 1
-
+                
+                # Ajouter les minutes de conduite au buffer
+                if current_step_index < len(all_steps):
+                    driving_buffer_minutes += driving_minutes
+                else:
+                    driving_buffer_minutes += remaining_minutes
+                
+                # Si le buffer atteint ou dépasse 60 minutes, créer une entrée de log
                 if driving_buffer_minutes >= 60:
-                    buffer_end_time = current_time + timedelta(minutes=1)
-                    location = (f"Conduite de {trip.current_location} à {trip.pickup_location}" if in_initial_driving_phase
-                                else "Conduite")
+                    buffer_end_time = end_time
+                    
+                    # Créer une description détaillée basée sur l'étape actuelle ou précédente
+                    if current_step_index > 0 and current_step_index <= len(all_steps):
+                        step_info = all_steps[current_step_index - 1]
+                        road_name = step_info['name'] if step_info['name'] and step_info['name'] != '-' else 'route non nommée'
+                        instruction = step_info['instruction']
+                        
+                        if in_initial_driving_phase and not pickup_completed:
+                            location = f"Conduite de {trip.current_location} à {trip.pickup_location}: {instruction} sur {road_name}"
+                        else:
+                            location = f"Conduite de {trip.pickup_location} à {trip.dropoff_location}: {instruction} sur {road_name}"
+                    else:
+                        location = (f"Conduite de {trip.current_location} à {trip.pickup_location}" if in_initial_driving_phase and not pickup_completed
+                                    else f"Conduite de {trip.pickup_location} à {trip.dropoff_location}")
+                    
                     self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance)
                     driving_buffer_start = buffer_end_time
                     driving_buffer_minutes = 0
