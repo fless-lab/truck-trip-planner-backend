@@ -115,6 +115,8 @@ class TripCreateView(generics.CreateAPIView):
         # OpenRouteService attend les coordonnées au format [lon, lat]
         start = [start_coords[1], start_coords[0]]
         end = [end_coords[1], end_coords[0]]
+        print("start : ",start)
+        print("end : ",end)
         
         # Configuration de l'API OpenRouteService pour les camions (HGV)
         url = "https://api.openrouteservice.org/v2/directions/driving-hgv"
@@ -135,17 +137,17 @@ class TripCreateView(generics.CreateAPIView):
             "options": {
                 "vehicle_type": "hgv",  # Type de véhicule: poids lourd
                 "profile_params": {
-                    "weightings": {
-                        "no_drive_zones": {
-                            "driving-hgv": true  # Éviter les zones interdites aux camions
-                        }
-                    },
+                    # "weightings": {
+                    #     "no_drive_zones": {
+                    #         "driving-hgv": "true"  # Éviter les zones interdites aux camions
+                    #     }
+                    # },
                     "restrictions": {
                         "height": 4.0,  # Hauteur en mètres
                         "width": 2.55,  # Largeur en mètres
                         "length": 16.5,  # Longueur en mètres
                         "weight": 40.0,  # Poids en tonnes
-                        "axle_load": 11.5  # Charge par essieu en tonnes
+                        "axleload": 11.5  # Charge par essieu en tonnes
                     }
                 }
             }
@@ -153,14 +155,18 @@ class TripCreateView(generics.CreateAPIView):
         
         try:
             # Appel à l'API OpenRouteService
+            print("Req : ",url, body, headers)
             response = requests.post(url, json=body, headers=headers)
+            print(response.status_code, response.reason)
+            print(response.text)
             response.raise_for_status()  # Lève une exception en cas d'erreur HTTP
             
             # Traitement de la réponse
             data = response.json()
+            print("response.data : ",data)
             
-            # Extraction de la distance en miles (conversion de mètres en miles)
-            distance_miles = data['routes'][0]['summary']['distance'] / 1609.34
+            # Extraction de la distance (déjà en miles vu que précisé dans le corps de la requete)
+            distance_miles = data['routes'][0]['summary']['distance']
             
             # Extraction du temps de trajet en heures (conversion de secondes en heures)
             duration_hours = data['routes'][0]['summary']['duration'] / 3600
