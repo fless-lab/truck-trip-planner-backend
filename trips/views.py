@@ -884,6 +884,14 @@ class TripCreateView(generics.CreateAPIView):
         if start_time >= end_time:
             return
 
+        # S'assurer que start_time et end_time sont offset-aware
+        if start_time.tzinfo is None:
+            # Si start_time est offset-naive, utiliser le fuseau horaire par défaut (UTC)
+            start_time = timezone.make_aware(start_time, timezone=timezone.utc)
+        if end_time.tzinfo is None:
+            # Si end_time est offset-naive, utiliser le fuseau horaire par défaut (UTC)
+            end_time = timezone.make_aware(end_time, timezone=timezone.utc)
+
         location_with_distance = f"{location} ({distance:.1f} miles)"
         current_start = start_time
 
@@ -892,13 +900,27 @@ class TripCreateView(generics.CreateAPIView):
             next_midnight = datetime.combine(current_start.date() + timedelta(days=1), time.min, tzinfo=current_start.tzinfo)
             current_end = min(end_time, next_midnight)
 
-            # Vérifier les chevauchements
+            # Créer des datetime pour la nouvelle entrée, déjà offset-aware
             new_start_dt = datetime.combine(current_start.date(), current_start.time(), tzinfo=current_start.tzinfo)
             new_end_dt = datetime.combine(current_start.date(), current_end.time(), tzinfo=current_start.tzinfo)
+
+            # Vérifier les chevauchements
             for entry in log_entries:
                 if entry.date == current_start.date():
-                    entry_start_dt = datetime.combine(entry.date, entry.start_time)
-                    entry_end_dt = datetime.combine(entry.date, entry.end_time)
+                    # Rendre les datetime des entrées existantes offset-aware en utilisant le même tzinfo
+                    entry_start_dt = datetime.combine(entry.date, entry.start_time, tzinfo=current_start.tzinfo)
+                    entry_end_dt = datetime.combine(entry.date, entry.end_time, tzinfo=current_start.tzinfo)
+                    
+                    # Vérifier que tous les datetimes sont offset-aware avant de les comparer
+                    if new_start_dt.tzinfo is None:
+                        new_start_dt = timezone.make_aware(new_start_dt, timezone=timezone.utc)
+                    if new_end_dt.tzinfo is None:
+                        new_end_dt = timezone.make_aware(new_end_dt, timezone=timezone.utc)
+                    if entry_start_dt.tzinfo is None:
+                        entry_start_dt = timezone.make_aware(entry_start_dt, timezone=timezone.utc)
+                    if entry_end_dt.tzinfo is None:
+                        entry_end_dt = timezone.make_aware(entry_end_dt, timezone=timezone.utc)
+                        
                     if not (new_end_dt <= entry_start_dt or new_start_dt >= entry_end_dt):
                         print(f"Chevauchement détecté : {duty_status} ({new_start_dt} - {new_end_dt}) vs {entry.duty_status} ({entry_start_dt} - {entry_end_dt})")
                         return  # Ignorer l'ajout en cas de chevauchement
