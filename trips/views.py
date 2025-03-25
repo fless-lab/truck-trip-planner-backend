@@ -227,9 +227,6 @@ class TripCreateView(generics.CreateAPIView):
         current_time = trip.start_time
         current_distance = 0
         
-        # Initialisation de driving_minutes pour éviter l'erreur UnboundLocalError
-        driving_minutes = 0
-        
         # Récupération des segments de route calculés par l'API OpenRouteService
         segments_to_pickup = self.segments_to_pickup
         segments_to_dropoff = self.segments_to_dropoff
@@ -355,55 +352,11 @@ class TripCreateView(generics.CreateAPIView):
 
                     continue
 
-                # Check for fueling stops every FUELING_INTERVAL miles
-                next_fueling_mile = (int(current_distance // FUELING_INTERVAL) + 1) * FUELING_INTERVAL
-                if next_fueling_mile not in fueling_stops_made and current_distance + (AVERAGE_SPEED / 60) * driving_minutes / 60 >= next_fueling_mile:
-                    # Calculate how many minutes of driving needed to reach the fueling point
-                    minutes_to_fuel = (next_fueling_mile - current_distance) / (AVERAGE_SPEED / 60)
-                    
-                    if driving_buffer_minutes > 0:
-                        buffer_end_time = current_time + timedelta(minutes=minutes_to_fuel)
-                        location = (f"Conduite de {trip.current_location} à {trip.pickup_location}" if in_initial_driving_phase
-                                    else f"Conduite de {trip.pickup_location} à {trip.dropoff_location}")
-                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, next_fueling_mile)
-                        driving_buffer_start = None
-                        driving_buffer_minutes = 0
-                    
-                    # Add fueling stop (15 minutes)
-                    fueling_start_time = current_time + timedelta(minutes=minutes_to_fuel)
-                    fueling_end_time = fueling_start_time + timedelta(minutes=15)
-                    self.add_log_entry(log_entries, trip, fueling_start_time, fueling_end_time, 'ON_DUTY_NOT_DRIVING', f"Ravitaillement à {next_fueling_mile} miles", next_fueling_mile)
-                    
-                    # Update time and duty hours
-                    current_time = fueling_end_time
-                    current_distance = next_fueling_mile
-                    total_on_duty_hours += 0.25  # 15 minutes = 0.25 hours
-                    fueling_stops_made.add(next_fueling_mile)
-                    
-                    # Check if we need to take a break after fueling
-                    if driving_since_last_break >= MAX_DRIVING_HOURS_BEFORE_BREAK:
-                        end_time = current_time + timedelta(minutes=30)
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Pause de 30 minutes", current_distance)
-                        current_time = end_time
-                        driving_since_last_break = 0
-                        total_on_duty_hours += 0.5
-                    
-                    if total_on_duty_hours >= MAX_CYCLE_HOURS:
-                        end_time = current_time + timedelta(hours=RESTART_HOURS)
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance)
-                        current_time = end_time
-                        total_on_duty_hours = 0
-                        trip_state["last_duty_start_time"] = None
-                        break
-                    
-                    continue
-                
-                # Check for mandatory breaks after 8 hours of driving
                 if driving_since_last_break >= MAX_DRIVING_HOURS_BEFORE_BREAK:
                     if driving_buffer_minutes > 0:
                         buffer_end_time = current_time
                         location = (f"Conduite de {trip.current_location} à {trip.pickup_location}" if in_initial_driving_phase
-                                    else f"Conduite de {trip.pickup_location} à {trip.dropoff_location}")
+                                    else "Conduite")
                         self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance)
                         driving_buffer_start = None
                         driving_buffer_minutes = 0
@@ -424,7 +377,185 @@ class TripCreateView(generics.CreateAPIView):
                     
                     continue
 
+                # Calcul du prochain arrêt de ravitaillement
+                next_fueling_mile = (int(current_distance // FUELING_INTERVAL) + 1) * FUELING_INTERVAL
+                # Vérifier si on approche d'un arrêt de ravitaillement (à moins de 60 miles)
+                # Ajout d'un log pour déboguer les arrêts de ravitaillement
+                print(f"Distance actuelle: {current_distance}, Prochain ravitaillement: {next_fueling_mile}, Différence: {next_fueling_mile - current_distance}")
+                if next_fueling_mile not in fueling_stops_made and current_distance + 60 >= next_fueling_mile:
+                    minutes_to_fuel = (next_fueling_mile - current_distance) / (AVERAGE_SPEED / 60)
+                    hours_to_fuel = minutes_to_fuel / 60
+                    
+                    if total_on_duty_hours + hours_to_fuel >= MAX_CYCLE_HOURS:
+                        minutes_to_cycle_limit = (MAX_CYCLE_HOURS - total_on_duty_hours) * 60
+                        if minutes_to_cycle_limit <= 0:
+                            if driving_buffer_minutes > 0:
+                                buffer_end_time = current_time
+                                location = (f"Conduite de {trip.current_location} à {trip.pickup_location}" if in_initial_driving_phase
+                                            else "Conduite")
+                                self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance)
+                                driving_buffer_start = None
+                                driving_buffer_minutes = 0
 
+                            end_time = current_time + timedelta(hours=RESTART_HOURS)
+                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance)
+                            current_time = end_time
+                            total_on_duty_hours = 0
+                            trip_state["last_duty_start_time"] = None
+                            break
+                        
+                        if driving_buffer_minutes > 0:
+                            buffer_end_time = current_time
+                            location = (f"Conduite de {trip.current_location} à {trip.pickup_location}" if in_initial_driving_phase
+                                        else "Conduite")
+                            self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance)
+                            driving_buffer_start = None
+                            driving_buffer_minutes = 0
+                            
+                        cycle_limit_time = current_time + timedelta(minutes=minutes_to_cycle_limit)
+                        location = (f"Conduite de {trip.current_location} à {trip.pickup_location} jusqu'à limite du cycle" if in_initial_driving_phase
+                                    else "Conduite jusqu'à limite du cycle")
+                        self.add_log_entry(log_entries, trip, current_time, cycle_limit_time, 'DRIVING', location, current_distance)
+                        current_time = cycle_limit_time
+                        current_distance += minutes_to_cycle_limit * (AVERAGE_SPEED / 60)
+                        window_driving_hours += minutes_to_cycle_limit / 60
+                        driving_since_last_break += minutes_to_cycle_limit / 60
+                        total_on_duty_hours = MAX_CYCLE_HOURS
+                        
+                        end_time = current_time + timedelta(hours=RESTART_HOURS)
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance)
+                        current_time = end_time
+                        total_on_duty_hours = 0
+                        trip_state["last_duty_start_time"] = None
+                        break
+                    
+                    if window_driving_hours + hours_to_fuel > MAX_DRIVING_HOURS_PER_WINDOW:
+                        hours_to_fuel = MAX_DRIVING_HOURS_PER_WINDOW - window_driving_hours
+                        minutes_to_fuel = hours_to_fuel * 60
+
+                    if driving_since_last_break + (minutes_to_fuel / 60) > MAX_DRIVING_HOURS_BEFORE_BREAK:
+                        minutes_to_break = (MAX_DRIVING_HOURS_BEFORE_BREAK - driving_since_last_break) * 60
+                        hours_to_break = minutes_to_break / 60
+                        end_time = current_time + timedelta(minutes=minutes_to_break)
+                        
+                        if driving_buffer_minutes > 0:
+                            buffer_end_time = current_time
+                            location = (f"Conduite de {trip.current_location} à {trip.pickup_location}" if in_initial_driving_phase
+                                        else "Conduite")
+                            self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance)
+                            driving_buffer_start = None
+                            driving_buffer_minutes = 0
+
+                        location = (f"Conduite de {trip.current_location} à {trip.pickup_location} jusqu'à la pause" if in_initial_driving_phase
+                                    else "Conduite jusqu'à la pause")
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'DRIVING', location, current_distance)
+                        current_time = end_time
+                        current_distance += minutes_to_break * (AVERAGE_SPEED / 60)
+                        window_driving_hours += hours_to_break
+                        driving_since_last_break += hours_to_break
+                        total_on_duty_hours += hours_to_break
+                        
+                        if total_on_duty_hours >= MAX_CYCLE_HOURS:
+                            end_time = current_time + timedelta(hours=RESTART_HOURS)
+                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance)
+                            current_time = end_time
+                            total_on_duty_hours = 0
+                            trip_state["last_duty_start_time"] = None
+                            break
+
+                        end_time = current_time + timedelta(minutes=30)
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Pause de 30 minutes", current_distance)
+                        current_time = end_time
+                        driving_since_last_break = 0
+                        total_on_duty_hours += 0.5
+                        
+                        if total_on_duty_hours >= MAX_CYCLE_HOURS:
+                            end_time = current_time + timedelta(hours=RESTART_HOURS)
+                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance)
+                            current_time = end_time
+                            total_on_duty_hours = 0
+                            trip_state["last_duty_start_time"] = None
+                            break
+                            
+                        continue
+
+                    end_time = current_time + timedelta(minutes=minutes_to_fuel)
+                    
+                    if driving_buffer_minutes > 0:
+                        buffer_end_time = current_time
+                        location = (f"Conduite de {trip.current_location} à {trip.pickup_location}" if in_initial_driving_phase
+                                    else "Conduite")
+                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance)
+                        driving_buffer_start = None
+                        driving_buffer_minutes = 0
+
+                    location = (f"Conduite de {trip.current_location} à {trip.pickup_location} jusqu'au ravitaillement" if in_initial_driving_phase
+                                else "Conduite jusqu'au ravitaillement")
+                    self.add_log_entry(log_entries, trip, current_time, end_time, 'DRIVING', location, current_distance)
+                    current_time = end_time
+                    current_distance += minutes_to_fuel * (AVERAGE_SPEED / 60)
+                    window_driving_hours += hours_to_fuel
+                    driving_since_last_break += hours_to_fuel
+                    total_on_duty_hours += hours_to_fuel
+                    
+                    if total_on_duty_hours >= MAX_CYCLE_HOURS:
+                        end_time = current_time + timedelta(hours=RESTART_HOURS)
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance)
+                        current_time = end_time
+                        total_on_duty_hours = 0
+                        trip_state["last_duty_start_time"] = None
+                        break
+
+                    # Enregistrement de l'arrêt de ravitaillement avec plus de détails
+                    fueling_stops_made.add(next_fueling_mile)
+                    end_time = current_time + timedelta(minutes=15)
+                    # Ajout d'informations plus détaillées sur l'arrêt de ravitaillement
+                    fueling_location = f"Arrêt de ravitaillement à {next_fueling_mile:.1f} miles"
+                    print(f"Ajout d'un arrêt de ravitaillement à {next_fueling_mile:.1f} miles")
+                    self.add_log_entry(log_entries, trip, current_time, end_time, 'ON_DUTY_NOT_DRIVING', fueling_location, current_distance)
+                    current_time = end_time
+                    total_on_duty_hours += 0.25
+                    
+                    if total_on_duty_hours >= MAX_CYCLE_HOURS:
+                        end_time = current_time + timedelta(hours=RESTART_HOURS)
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance)
+                        current_time = end_time
+                        total_on_duty_hours = 0
+                        trip_state["last_duty_start_time"] = None
+                        break
+
+                    driving_buffer_start = None
+                    driving_buffer_minutes = 0
+                    continue
+
+                # Vérifier si un arrêt de ravitaillement est nécessaire après chaque période de conduite
+                next_fueling_mile = (int(current_distance // FUELING_INTERVAL) + 1) * FUELING_INTERVAL
+                if next_fueling_mile not in fueling_stops_made and current_distance >= next_fueling_mile - 5:
+                    print(f"Arrêt de ravitaillement nécessaire à {next_fueling_mile} miles (distance actuelle: {current_distance})")
+                    if driving_buffer_minutes > 0:
+                        buffer_end_time = current_time
+                        location = (f"Conduite de {trip.current_location} à {trip.pickup_location}" if in_initial_driving_phase
+                                    else "Conduite")
+                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance)
+                        driving_buffer_start = None
+                        driving_buffer_minutes = 0
+
+                    fueling_stops_made.add(next_fueling_mile)
+                    end_time = current_time + timedelta(minutes=15)
+                    fueling_location = f"Arrêt de ravitaillement à {next_fueling_mile:.1f} miles"
+                    self.add_log_entry(log_entries, trip, current_time, end_time, 'ON_DUTY_NOT_DRIVING', fueling_location, current_distance)
+                    current_time = end_time
+                    total_on_duty_hours += 0.25
+                    
+                    if total_on_duty_hours >= MAX_CYCLE_HOURS:
+                        end_time = current_time + timedelta(hours=RESTART_HOURS)
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance)
+                        current_time = end_time
+                        total_on_duty_hours = 0
+                        trip_state["last_duty_start_time"] = None
+                        break
+                    continue
+                
                 # Vérifier s'il reste des steps à parcourir
                 if current_step_index < len(all_steps):
                     current_step = all_steps[current_step_index]
