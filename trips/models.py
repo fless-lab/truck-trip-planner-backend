@@ -28,6 +28,9 @@ class LogEntry(models.Model):
     start_time = models.TimeField()
     end_time = models.TimeField()
     location = models.CharField(max_length=255)
+    # To track driver status positions (for map visualization)
+    latitude = models.FloatField(null=True, blank=True)
+    longitude = models.FloatField(null=True, blank=True)
 
     def __str__(self):
         return f"{self.duty_status} on {self.date} from {self.start_time} to {self.end_time}"
