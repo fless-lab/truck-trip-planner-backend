@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 class LogEntrySerializer(serializers.ModelSerializer):
     class Meta:
         model = LogEntry
-        fields = ['date', 'duty_status', 'start_time', 'end_time', 'location']
+        fields = ['date', 'duty_status', 'start_time', 'end_time', 'location', 'latitude', 'longitude']
 
 class TripSerializer(serializers.ModelSerializer):
     logs = LogEntrySerializer(many=True, read_only=True)
