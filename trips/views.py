@@ -924,13 +924,18 @@ class TripCreateView(generics.CreateAPIView):
                     if not (new_end_dt <= entry_start_dt or new_start_dt >= entry_end_dt):
                         print(f"Chevauchement détecté : {duty_status} ({new_start_dt} - {new_end_dt}) vs {entry.duty_status} ({entry_start_dt} - {entry_end_dt})")
                         return  # Ignorer l'ajout en cas de chevauchement
+                    
+            # Ajuster end_time uniquement pour la sauvegarde dans la base de données
+            adjusted_end_time = current_end.time()
+            if adjusted_end_time == time.min and current_end != end_time:
+                adjusted_end_time = time(23, 59, 59, 999999)
 
             log_entries.append(LogEntry(
                 trip=trip,
                 date=current_start.date(),
                 duty_status=duty_status,
                 start_time=current_start.time(),
-                end_time=current_end.time(),
+                end_time=adjusted_end_time,
                 location=location_with_distance
             ))
 
