@@ -10,6 +10,8 @@ class Trip(models.Model):
     distance = models.FloatField(null=True, blank=True)  # Total distance traveled in miles
     estimated_duration = models.FloatField(null=True, blank=True)  # Estimated duration in hours
     created_at = models.DateTimeField(auto_now_add=True)
+    # Trip polyline (got from ORS api..will be stored as is)
+    route_polyline = models.TextField(null=True, blank=True)
 
     def __str__(self):
         return f"Trip from {self.current_location} to {self.dropoff_location}"

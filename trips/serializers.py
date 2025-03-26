@@ -16,7 +16,7 @@ class TripSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'current_location', 'pickup_location', 'dropoff_location',
             'current_cycle_hours', 'start_time', 'distance', 'estimated_duration',
-            'logs', 'summary'
+            'logs', 'summary', 'route_polyline'
         ]
 
     def get_summary(self, obj):
