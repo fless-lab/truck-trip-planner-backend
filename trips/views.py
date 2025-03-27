@@ -1,4 +1,5 @@
 import os
+import polyline
 from datetime import datetime, timedelta, time
 from django.utils import timezone
 from rest_framework import generics, status
@@ -52,7 +53,9 @@ class TripCreateView(generics.CreateAPIView):
             start_time=start_time,
             current_location=current_location,
             pickup_location=pickup_location,
-            dropoff_location=dropoff_location
+            dropoff_location=dropoff_location,
+            route_geometry_to_pickup=self.route_geometry_to_pickup,
+            route_geometry_to_dropoff=self.route_geometry_to_dropoff
         )
 
         self.generate_eld_logs(trip, distance_to_pickup, distance_to_dropoff, current_cycle_hours)
@@ -79,12 +82,14 @@ class TripCreateView(generics.CreateAPIView):
         
         if current_location == pickup_location:
             distance_to_pickup = 0
+            self.route_geometry_to_pickup = None
         else:
             current_coords = CITIES_WITH_COORDS[current_location]
             pickup_coords = CITIES_WITH_COORDS[pickup_location]
             
-            # Récupération de la distance et de la durée
-            distance_to_pickup, duration_to_pickup = self._calculate_route_distance(current_coords, pickup_coords, api_key)
+            # Récupération de la distance, de la durée et de la géométrie de la route
+            distance_to_pickup, duration_to_pickup, geometry_to_pickup = self._calculate_route_distance(current_coords, pickup_coords, api_key)
+            self.route_geometry_to_pickup = geometry_to_pickup
         
         pickup_coords = CITIES_WITH_COORDS[pickup_location]
         dropoff_coords = CITIES_WITH_COORDS[dropoff_location]
@@ -93,7 +98,8 @@ class TripCreateView(generics.CreateAPIView):
         print(f"Dropoff coord : {dropoff_coords}")
         
         # Récupération de la distance et de la durée
-        distance_to_dropoff, duration_to_dropoff = self._calculate_route_distance(pickup_coords, dropoff_coords, api_key)
+        distance_to_dropoff, duration_to_dropoff, geometry_to_dropoff = self._calculate_route_distance(pickup_coords, dropoff_coords, api_key)
+        self.route_geometry_to_dropoff = geometry_to_dropoff
         
         # Stockage des durées dans des attributs de l'instance pour utilisation dans perform_create
         self.duration_to_pickup = duration_to_pickup
@@ -176,6 +182,9 @@ class TripCreateView(generics.CreateAPIView):
             # Extraction du temps de trajet en heures (conversion de secondes en heures)
             duration_hours = data['routes'][0]['summary']['duration'] / 3600
             
+            # Extraction du polyline encodé
+            geometry = data['routes'][0]['geometry']  # Polyline encodé
+            
             # Extraction des segments de l'itinéraire pour un traitement plus granulaire
             route_segments = []
             if 'segments' in data['routes'][0]:
@@ -188,7 +197,8 @@ class TripCreateView(generics.CreateAPIView):
                                 'distance': step['distance'],  # en miles
                                 'duration': step['duration'] / 3600,  # conversion en heures
                                 'instruction': step['instruction'],
-                                'name': step['name']
+                                'name': step['name'],
+                                'way_points': step.get('way_points', [])
                             })
                     
                     route_segments.append({
@@ -200,7 +210,7 @@ class TripCreateView(generics.CreateAPIView):
             # Stockage des segments dans des attributs de l'instance pour utilisation dans generate_eld_logs
             self.route_segments = route_segments
             
-            return distance_miles, duration_hours
+            return distance_miles, duration_hours, geometry
             
         except requests.exceptions.RequestException as e:
             # En cas d'erreur avec l'API, utiliser geodesic comme solution de secours
@@ -213,7 +223,7 @@ class TripCreateView(generics.CreateAPIView):
             from .constants import AVERAGE_SPEED
             duration_hours = distance_miles / AVERAGE_SPEED
             
-            return distance_miles, duration_hours
+            return distance_miles, duration_hours, None
 
     def generate_eld_logs(self, trip, distance_to_pickup, distance_to_dropoff, current_cycle_hours):
         current_time = trip.start_time
@@ -228,31 +238,49 @@ class TripCreateView(generics.CreateAPIView):
         duration_to_pickup = self.duration_to_pickup
         duration_to_dropoff = self.duration_to_dropoff
         
+        # Décoder les polylines pour obtenir les coordonnées
+        coords_to_pickup = polyline.decode(trip.route_geometry_to_pickup) if trip.route_geometry_to_pickup else []
+        coords_to_dropoff = polyline.decode(trip.route_geometry_to_dropoff)
+        all_coords = coords_to_pickup + coords_to_dropoff if coords_to_pickup else coords_to_dropoff
+        
         # Création d'une liste combinée de tous les steps du trajet pour une approche plus granulaire
         all_steps = []
+        step_index_offset = 0
         
         # Ajout des steps pour aller au point de ramassage
         for segment in segments_to_pickup:
             for step in segment['steps']:
+                way_points = step.get('way_points', [0, 0])
+                start_idx = way_points[0] + step_index_offset
+                end_idx = way_points[1] + step_index_offset
                 all_steps.append({
                     'distance': step['distance'],
                     'duration': step['duration'],
                     'instruction': step['instruction'],
                     'name': step['name'],
                     'phase': 'pickup',
-                    'description': f"Conduite de {trip.current_location} à {trip.pickup_location}: {step['instruction']} sur {step['name']}"
+                    'description': f"Conduite de {trip.current_location} à {trip.pickup_location}: {step['instruction']} sur {step['name']}",
+                    'start_coords': all_coords[start_idx] if start_idx < len(all_coords) else None,
+                    'end_coords': all_coords[end_idx] if end_idx < len(all_coords) else None
                 })
+                
+        step_index_offset = len(coords_to_pickup) if coords_to_pickup else 0
         
         # Ajout des steps pour aller du point de ramassage à la destination
         for segment in segments_to_dropoff:
             for step in segment['steps']:
+                way_points = step.get('way_points', [0, 0])
+                start_idx = way_points[0] + step_index_offset
+                end_idx = way_points[1] + step_index_offset
                 all_steps.append({
                     'distance': step['distance'],
                     'duration': step['duration'],
                     'instruction': step['instruction'],
                     'name': step['name'],
                     'phase': 'dropoff',
-                    'description': f"Conduite de {trip.pickup_location} à {trip.dropoff_location}: {step['instruction']} sur {step['name']}"
+                    'description': f"Conduite de {trip.pickup_location} à {trip.dropoff_location}: {step['instruction']} sur {step['name']}",
+                    'start_coords': all_coords[start_idx] if start_idx < len(all_coords) else None,
+                    'end_coords': all_coords[end_idx] if end_idx < len(all_coords) else None
                 })
         
         # Utilisation des steps pour une approche plus granulaire
@@ -290,8 +318,10 @@ class TripCreateView(generics.CreateAPIView):
                         # S'assurer que le start_time est >= last_entry_end_time
                         if driving_buffer_start < last_entry_end_time:
                             driving_buffer_start = last_entry_end_time
+                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                         print(f"Adding entry: DRIVING from {driving_buffer_start} to {buffer_end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance)
+                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance, coords[0], coords[1])
                         last_entry_end_time = buffer_end_time
                         driving_buffer_start = None
                         driving_buffer_minutes = 0
@@ -300,8 +330,10 @@ class TripCreateView(generics.CreateAPIView):
                     # S'assurer que le start_time est >= last_entry_end_time
                     if current_time < last_entry_end_time:
                         current_time = last_entry_end_time
+                    current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                    coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                     print(f"Adding entry: SLEEPER_BERTH from {current_time} to {end_time} at {current_distance} miles")
-                    self.add_log_entry(log_entries, trip, current_time, end_time, 'SLEEPER_BERTH', "Repos de 10h après 14h de service", current_distance)
+                    self.add_log_entry(log_entries, trip, current_time, end_time, 'SLEEPER_BERTH', "Repos de 10h après 14h de service", current_distance, coords[0], coords[1])
                     last_entry_end_time = end_time
                     current_time = end_time
                     trip_state["last_duty_start_time"] = None
@@ -315,8 +347,10 @@ class TripCreateView(generics.CreateAPIView):
                                     else "Conduite")
                         if driving_buffer_start < last_entry_end_time:
                             driving_buffer_start = last_entry_end_time
+                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                         print(f"Adding entry: DRIVING from {driving_buffer_start} to {buffer_end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance)
+                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance, coords[0], coords[1])
                         last_entry_end_time = buffer_end_time
                         driving_buffer_start = None
                         driving_buffer_minutes = 0
@@ -324,8 +358,10 @@ class TripCreateView(generics.CreateAPIView):
                     end_time = current_time + timedelta(hours=RESTART_HOURS)
                     if current_time < last_entry_end_time:
                         current_time = last_entry_end_time
+                    current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                    coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                     print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                    self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance)
+                    self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, coords[0], coords[1])
                     last_entry_end_time = end_time
                     current_time = end_time
                     total_on_duty_hours = 0
@@ -337,8 +373,10 @@ class TripCreateView(generics.CreateAPIView):
                         buffer_end_time = current_time
                         if driving_buffer_start < last_entry_end_time:
                             driving_buffer_start = last_entry_end_time
+                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                         print(f"Adding entry: DRIVING from {driving_buffer_start} to {buffer_end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', f"Conduite de {trip.current_location} à {trip.pickup_location}", current_distance)
+                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', f"Conduite de {trip.current_location} à {trip.pickup_location}", current_distance, coords[0], coords[1])
                         last_entry_end_time = buffer_end_time
                         driving_buffer_start = None
                         driving_buffer_minutes = 0
@@ -346,8 +384,10 @@ class TripCreateView(generics.CreateAPIView):
                     pickup_end_time = current_time + timedelta(hours=1)
                     if current_time < last_entry_end_time:
                         current_time = last_entry_end_time
+                    current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                    coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                     print(f"Adding entry: ON_DUTY_NOT_DRIVING from {current_time} to {pickup_end_time} at {current_distance} miles")
-                    self.add_log_entry(log_entries, trip, current_time, pickup_end_time, 'ON_DUTY_NOT_DRIVING', f"Ramassage à {trip.pickup_location}", current_distance)
+                    self.add_log_entry(log_entries, trip, current_time, pickup_end_time, 'ON_DUTY_NOT_DRIVING', f"Ramassage à {trip.pickup_location}", current_distance, coords[0], coords[1])
                     last_entry_end_time = pickup_end_time
                     current_time = pickup_end_time
                     total_on_duty_hours += 1
@@ -358,8 +398,10 @@ class TripCreateView(generics.CreateAPIView):
                         end_time = current_time + timedelta(hours=RESTART_HOURS)
                         if current_time < last_entry_end_time:
                             current_time = last_entry_end_time
+                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                         print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance)
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, coords[0], coords[1])
                         last_entry_end_time = end_time
                         current_time = end_time
                         total_on_duty_hours = 0
@@ -371,8 +413,10 @@ class TripCreateView(generics.CreateAPIView):
                         end_time = current_time + timedelta(hours=MINIMUM_REST_HOURS)
                         if current_time < last_entry_end_time:
                             current_time = last_entry_end_time
+                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                         print(f"Adding entry: SLEEPER_BERTH from {current_time} to {end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'SLEEPER_BERTH', "Repos de 10h après 14h de service", current_distance)
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'SLEEPER_BERTH', "Repos de 10h après 14h de service", current_distance,coords[0], coords[1])
                         last_entry_end_time = end_time
                         current_time = end_time
                         trip_state["last_duty_start_time"] = None
@@ -387,8 +431,10 @@ class TripCreateView(generics.CreateAPIView):
                                     else "Conduite")
                         if driving_buffer_start < last_entry_end_time:
                             driving_buffer_start = last_entry_end_time
+                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                         print(f"Adding entry: DRIVING from {driving_buffer_start} to {buffer_end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance)
+                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance, coords[0], coords[1])
                         last_entry_end_time = buffer_end_time
                         driving_buffer_start = None
                         driving_buffer_minutes = 0
@@ -396,8 +442,10 @@ class TripCreateView(generics.CreateAPIView):
                     end_time = current_time + timedelta(minutes=30)
                     if current_time < last_entry_end_time:
                         current_time = last_entry_end_time
+                    current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                    coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                     print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                    self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Pause de 30 minutes", current_distance)
+                    self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Pause de 30 minutes", current_distance, coords[0], coords[1])
                     last_entry_end_time = end_time
                     current_time = end_time
                     driving_since_last_break = 0
@@ -407,8 +455,10 @@ class TripCreateView(generics.CreateAPIView):
                         end_time = current_time + timedelta(hours=RESTART_HOURS)
                         if current_time < last_entry_end_time:
                             current_time = last_entry_end_time
+                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                         print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance)
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, coords[0], coords[1])
                         last_entry_end_time = end_time
                         current_time = end_time
                         total_on_duty_hours = 0
@@ -433,8 +483,10 @@ class TripCreateView(generics.CreateAPIView):
                                             else "Conduite")
                                 if driving_buffer_start < last_entry_end_time:
                                     driving_buffer_start = last_entry_end_time
+                                current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                                coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                                 print(f"Adding entry: DRIVING from {driving_buffer_start} to {buffer_end_time} at {current_distance} miles")
-                                self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance)
+                                self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance, coords[0], coords[1])
                                 last_entry_end_time = buffer_end_time
                                 driving_buffer_start = None
                                 driving_buffer_minutes = 0
@@ -442,8 +494,10 @@ class TripCreateView(generics.CreateAPIView):
                             end_time = current_time + timedelta(hours=RESTART_HOURS)
                             if current_time < last_entry_end_time:
                                 current_time = last_entry_end_time
+                            current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                            coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                             print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance)
+                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, coords[0], coords[1])
                             last_entry_end_time = end_time
                             current_time = end_time
                             total_on_duty_hours = 0
@@ -456,8 +510,10 @@ class TripCreateView(generics.CreateAPIView):
                                         else "Conduite")
                             if driving_buffer_start < last_entry_end_time:
                                 driving_buffer_start = last_entry_end_time
+                            current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                            coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                             print(f"Adding entry: DRIVING from {driving_buffer_start} to {buffer_end_time} at {current_distance} miles")
-                            self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance)
+                            self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance, coords[0], coords[1])
                             last_entry_end_time = buffer_end_time
                             driving_buffer_start = None
                             driving_buffer_minutes = 0
@@ -467,8 +523,10 @@ class TripCreateView(generics.CreateAPIView):
                                     else "Conduite jusqu'à limite du cycle")
                         if current_time < last_entry_end_time:
                             current_time = last_entry_end_time
+                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                         print(f"Adding entry: DRIVING from {current_time} to {cycle_limit_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, current_time, cycle_limit_time, 'DRIVING', location, current_distance)
+                        self.add_log_entry(log_entries, trip, current_time, cycle_limit_time, 'DRIVING', location, current_distance, coords[0], coords[1])
                         last_entry_end_time = cycle_limit_time
                         current_time = cycle_limit_time
                         current_distance += minutes_to_cycle_limit * (AVERAGE_SPEED / 60)
@@ -479,8 +537,10 @@ class TripCreateView(generics.CreateAPIView):
                         end_time = current_time + timedelta(hours=RESTART_HOURS)
                         if current_time < last_entry_end_time:
                             current_time = last_entry_end_time
+                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                         print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance)
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, coords[0], coords[1])
                         last_entry_end_time = end_time
                         current_time = end_time
                         total_on_duty_hours = 0
@@ -502,8 +562,10 @@ class TripCreateView(generics.CreateAPIView):
                                         else "Conduite")
                             if driving_buffer_start < last_entry_end_time:
                                 driving_buffer_start = last_entry_end_time
+                            current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                            coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                             print(f"Adding entry: DRIVING from {driving_buffer_start} to {buffer_end_time} at {current_distance} miles")
-                            self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance)
+                            self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance, coords[0], coords[1])
                             last_entry_end_time = buffer_end_time
                             driving_buffer_start = None
                             driving_buffer_minutes = 0
@@ -512,8 +574,10 @@ class TripCreateView(generics.CreateAPIView):
                                     else "Conduite jusqu'à la pause")
                         if current_time < last_entry_end_time:
                             current_time = last_entry_end_time
+                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                         print(f"Adding entry: DRIVING from {current_time} to {end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'DRIVING', location, current_distance)
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'DRIVING', location, current_distance, coords[0], coords[1])
                         last_entry_end_time = end_time
                         current_time = end_time
                         current_distance += minutes_to_break * (AVERAGE_SPEED / 60)
@@ -525,8 +589,10 @@ class TripCreateView(generics.CreateAPIView):
                             end_time = current_time + timedelta(hours=RESTART_HOURS)
                             if current_time < last_entry_end_time:
                                 current_time = last_entry_end_time
+                            current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                            coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                             print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance)
+                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, coords[0], coords[1])
                             last_entry_end_time = end_time
                             current_time = end_time
                             total_on_duty_hours = 0
@@ -536,8 +602,10 @@ class TripCreateView(generics.CreateAPIView):
                         end_time = current_time + timedelta(minutes=30)
                         if current_time < last_entry_end_time:
                             current_time = last_entry_end_time
+                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                         print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Pause de 30 minutes", current_distance)
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Pause de 30 minutes", current_distance, coords[0], coords[1])
                         last_entry_end_time = end_time
                         current_time = end_time
                         driving_since_last_break = 0
@@ -547,8 +615,10 @@ class TripCreateView(generics.CreateAPIView):
                             end_time = current_time + timedelta(hours=RESTART_HOURS)
                             if current_time < last_entry_end_time:
                                 current_time = last_entry_end_time
+                            current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                            coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                             print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance)
+                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, coords[0], coords[1])
                             last_entry_end_time = end_time
                             current_time = end_time
                             total_on_duty_hours = 0
@@ -565,8 +635,10 @@ class TripCreateView(generics.CreateAPIView):
                                     else "Conduite")
                         if driving_buffer_start < last_entry_end_time:
                             driving_buffer_start = last_entry_end_time
+                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                         print(f"Adding entry: DRIVING from {driving_buffer_start} to {buffer_end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance)
+                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance, coords[0], coords[1])
                         last_entry_end_time = buffer_end_time
                         driving_buffer_start = None
                         driving_buffer_minutes = 0
@@ -575,8 +647,10 @@ class TripCreateView(generics.CreateAPIView):
                                 else "Conduite jusqu'au ravitaillement")
                     if current_time < last_entry_end_time:
                         current_time = last_entry_end_time
+                    current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                    coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                     print(f"Adding entry: DRIVING from {current_time} to {end_time} at {current_distance} miles")
-                    self.add_log_entry(log_entries, trip, current_time, end_time, 'DRIVING', location, current_distance)
+                    self.add_log_entry(log_entries, trip, current_time, end_time, 'DRIVING', location, current_distance, coords[0], coords[1])
                     last_entry_end_time = end_time
                     current_time = end_time
                     current_distance += minutes_to_fuel * (AVERAGE_SPEED / 60)
@@ -588,8 +662,10 @@ class TripCreateView(generics.CreateAPIView):
                         end_time = current_time + timedelta(hours=RESTART_HOURS)
                         if current_time < last_entry_end_time:
                             current_time = last_entry_end_time
+                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                         print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance)
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, coords[0], coords[1])
                         last_entry_end_time = end_time
                         current_time = end_time
                         total_on_duty_hours = 0
@@ -602,8 +678,10 @@ class TripCreateView(generics.CreateAPIView):
                     print(f"Ajout d'un arrêt de ravitaillement à {next_fueling_mile:.1f} miles")
                     if current_time < last_entry_end_time:
                         current_time = last_entry_end_time
+                    current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                    coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                     print(f"Adding entry: ON_DUTY_NOT_DRIVING from {current_time} to {end_time} at {current_distance} miles")
-                    self.add_log_entry(log_entries, trip, current_time, end_time, 'ON_DUTY_NOT_DRIVING', fueling_location, current_distance)
+                    self.add_log_entry(log_entries, trip, current_time, end_time, 'ON_DUTY_NOT_DRIVING', fueling_location, current_distance, coords[0], coords[1])
                     last_entry_end_time = end_time
                     current_time = end_time
                     total_on_duty_hours += 0.25
@@ -612,8 +690,10 @@ class TripCreateView(generics.CreateAPIView):
                         end_time = current_time + timedelta(hours=RESTART_HOURS)
                         if current_time < last_entry_end_time:
                             current_time = last_entry_end_time
+                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                         print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance)
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, coords[0], coords[1])
                         last_entry_end_time = end_time
                         current_time = end_time
                         total_on_duty_hours = 0
@@ -633,8 +713,10 @@ class TripCreateView(generics.CreateAPIView):
                                     else "Conduite")
                         if driving_buffer_start < last_entry_end_time:
                             driving_buffer_start = last_entry_end_time
+                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                         print(f"Adding entry: DRIVING from {driving_buffer_start} to {buffer_end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance)
+                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance, coords[0], coords[1])
                         last_entry_end_time = buffer_end_time
                         driving_buffer_start = None
                         driving_buffer_minutes = 0
@@ -644,8 +726,10 @@ class TripCreateView(generics.CreateAPIView):
                     fueling_location = f"Arrêt de ravitaillement à {next_fueling_mile:.1f} miles"
                     if current_time < last_entry_end_time:
                         current_time = last_entry_end_time
+                    current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                    coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                     print(f"Adding entry: ON_DUTY_NOT_DRIVING from {current_time} to {end_time} at {current_distance} miles")
-                    self.add_log_entry(log_entries, trip, current_time, end_time, 'ON_DUTY_NOT_DRIVING', fueling_location, current_distance)
+                    self.add_log_entry(log_entries, trip, current_time, end_time, 'ON_DUTY_NOT_DRIVING', fueling_location, current_distance, coords[0], coords[1])
                     last_entry_end_time = end_time
                     current_time = end_time
                     total_on_duty_hours += 0.25
@@ -654,8 +738,10 @@ class TripCreateView(generics.CreateAPIView):
                         end_time = current_time + timedelta(hours=RESTART_HOURS)
                         if current_time < last_entry_end_time:
                             current_time = last_entry_end_time
+                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                         print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance)
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, coords[0], coords[1])
                         last_entry_end_time = end_time
                         current_time = end_time
                         total_on_duty_hours = 0
@@ -717,8 +803,10 @@ class TripCreateView(generics.CreateAPIView):
                                         else "Conduite")
                             if driving_buffer_start < last_entry_end_time:
                                 driving_buffer_start = last_entry_end_time
+                            current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                            coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                             print(f"Adding entry: DRIVING from {driving_buffer_start} to {buffer_end_time} at {current_distance} miles")
-                            self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance)
+                            self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance, coords[0], coords[1])
                             last_entry_end_time = buffer_end_time
                             driving_buffer_start = None
                             driving_buffer_minutes = 0
@@ -726,8 +814,10 @@ class TripCreateView(generics.CreateAPIView):
                         end_time = current_time + timedelta(minutes=1) + timedelta(hours=RESTART_HOURS)
                         if current_time < last_entry_end_time:
                             current_time = last_entry_end_time
+                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                         print(f"Adding entry: OFF_DUTY from {current_time + timedelta(minutes=1)} to {end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, current_time + timedelta(minutes=1), end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance)
+                        self.add_log_entry(log_entries, trip, current_time + timedelta(minutes=1), end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, coords[0], coords[1])
                         last_entry_end_time = end_time
                         current_time = end_time
                         total_on_duty_hours = 0
@@ -749,6 +839,7 @@ class TripCreateView(generics.CreateAPIView):
                         step_info = all_steps[current_step_index - 1]
                         road_name = step_info['name'] if step_info['name'] and step_info['name'] != '-' else 'route non nommée'
                         instruction = step_info['instruction']
+                        coords = step_info['end_coords'] if step_info['end_coords'] else (None, None)
                         
                         if in_initial_driving_phase and not pickup_completed:
                             location = f"Conduite de {trip.current_location} à {trip.pickup_location}: {instruction} sur {road_name}"
@@ -757,11 +848,12 @@ class TripCreateView(generics.CreateAPIView):
                     else:
                         location = (f"Conduite de {trip.current_location} à {trip.pickup_location}" if in_initial_driving_phase and not pickup_completed
                                     else f"Conduite de {trip.pickup_location} à {trip.dropoff_location}")
+                        coords = all_steps[-1]['end_coords'] if all_steps else (None, None)
                     
                     if driving_buffer_start < last_entry_end_time:
                         driving_buffer_start = last_entry_end_time
                     print(f"Adding entry: DRIVING from {driving_buffer_start} to {buffer_end_time} at {current_distance} miles")
-                    self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance)
+                    self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance, coords[0], coords[1])
                     last_entry_end_time = buffer_end_time
                     driving_buffer_start = buffer_end_time
                     driving_buffer_minutes = 0
@@ -775,8 +867,10 @@ class TripCreateView(generics.CreateAPIView):
                                     else "Conduite")
                         if driving_buffer_start < last_entry_end_time:
                             driving_buffer_start = last_entry_end_time
+                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                         print(f"Adding entry: DRIVING from {driving_buffer_start} to {buffer_end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance)
+                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance, coords[0], coords[1])
                         last_entry_end_time = buffer_end_time
                         driving_buffer_start = None
                         driving_buffer_minutes = 0
@@ -786,8 +880,10 @@ class TripCreateView(generics.CreateAPIView):
                         end_time = current_time + timedelta(hours=time_to_window_end)
                         if current_time < last_entry_end_time:
                             current_time = last_entry_end_time
+                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                         print(f"Adding entry: ON_DUTY_NOT_DRIVING from {current_time} to {end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'ON_DUTY_NOT_DRIVING', "Fin de fenêtre de 14h", current_distance)
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'ON_DUTY_NOT_DRIVING', "Fin de fenêtre de 14h", current_distance, coords[0], coords[1])
                         last_entry_end_time = end_time
                         current_time = end_time
                         total_on_duty_hours += time_to_window_end
@@ -796,8 +892,10 @@ class TripCreateView(generics.CreateAPIView):
                             end_time = current_time + timedelta(hours=RESTART_HOURS)
                             if current_time < last_entry_end_time:
                                 current_time = last_entry_end_time
+                            current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                            coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                             print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance)
+                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, coords[0], coords[1])
                             last_entry_end_time = end_time
                             current_time = end_time
                             total_on_duty_hours = 0
@@ -807,8 +905,10 @@ class TripCreateView(generics.CreateAPIView):
                     end_time = current_time + timedelta(hours=MINIMUM_REST_HOURS)
                     if current_time < last_entry_end_time:
                         current_time = last_entry_end_time
+                    current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
+                    coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
                     print(f"Adding entry: SLEEPER_BERTH from {current_time} to {end_time} at {current_distance} miles")
-                    self.add_log_entry(log_entries, trip, current_time, end_time, 'SLEEPER_BERTH', "Repos de 10h après 11h de conduite", current_distance)
+                    self.add_log_entry(log_entries, trip, current_time, end_time, 'SLEEPER_BERTH', "Repos de 10h après 11h de conduite", current_distance, coords[0], coords[1])
                     last_entry_end_time = end_time
                     current_time = end_time
                     trip_state["last_duty_start_time"] = None
@@ -820,8 +920,10 @@ class TripCreateView(generics.CreateAPIView):
                     buffer_end_time = current_time
                     if driving_buffer_start < last_entry_end_time:
                         driving_buffer_start = last_entry_end_time
+                    current_step = all_steps[-1] if all_steps else None
+                    coords = current_step['end_coords'] if current_step and current_step['end_coords'] else (None, None)
                     print(f"Adding entry: DRIVING from {driving_buffer_start} to {buffer_end_time} at {current_distance} miles")
-                    self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', "Conduite", current_distance)
+                    self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', "Conduite", current_distance, coords[0], coords[1])
                     last_entry_end_time = buffer_end_time
                     driving_buffer_start = None
                     driving_buffer_minutes = 0
@@ -829,8 +931,10 @@ class TripCreateView(generics.CreateAPIView):
                 end_time = current_time + timedelta(hours=RESTART_HOURS)
                 if current_time < last_entry_end_time:
                     current_time = last_entry_end_time
+                current_step = all_steps[-1] if all_steps else None
+                coords = current_step['end_coords'] if current_step and current_step['end_coords'] else (None, None)
                 print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance)
+                self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, coords[0], coords[1])
                 last_entry_end_time = end_time
                 current_time = end_time
                 total_on_duty_hours = 0
@@ -843,8 +947,10 @@ class TripCreateView(generics.CreateAPIView):
                         buffer_end_time = current_time
                         if driving_buffer_start < last_entry_end_time:
                             driving_buffer_start = last_entry_end_time
+                        current_step = all_steps[-1] if all_steps else None
+                        coords = current_step['end_coords'] if current_step and current_step['end_coords'] else (None, None)
                         print(f"Adding entry: DRIVING from {driving_buffer_start} to {buffer_end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', "Conduite", current_distance)
+                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', "Conduite", current_distance, coords[0], coords[1])
                         last_entry_end_time = buffer_end_time
                         driving_buffer_start = None
                         driving_buffer_minutes = 0
@@ -852,8 +958,10 @@ class TripCreateView(generics.CreateAPIView):
                     end_time = current_time + timedelta(hours=MINIMUM_REST_HOURS)
                     if current_time < last_entry_end_time:
                         current_time = last_entry_end_time
+                    current_step = all_steps[-1] if all_steps else None
+                    coords = current_step['end_coords'] if current_step and current_step['end_coords'] else (None, None)
                     print(f"Adding entry: SLEEPER_BERTH from {current_time} to {end_time} at {current_distance} miles")
-                    self.add_log_entry(log_entries, trip, current_time, end_time, 'SLEEPER_BERTH', "Repos de 10h avant dépôt", current_distance)
+                    self.add_log_entry(log_entries, trip, current_time, end_time, 'SLEEPER_BERTH', "Repos de 10h avant dépôt", current_distance, coords[0], coords[1])
                     last_entry_end_time = end_time
                     current_time = end_time
                     trip_state["last_duty_start_time"] = None
@@ -862,8 +970,10 @@ class TripCreateView(generics.CreateAPIView):
                 buffer_end_time = current_time
                 if driving_buffer_start < last_entry_end_time:
                     driving_buffer_start = last_entry_end_time
+                current_step = all_steps[-1] if all_steps else None
+                coords = current_step['end_coords'] if current_step and current_step['end_coords'] else (None, None)
                 print(f"Adding entry: DRIVING from {driving_buffer_start} to {buffer_end_time} at {current_distance} miles")
-                self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', "Conduite", current_distance)
+                self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', "Conduite", current_distance, coords[0], coords[1])
                 last_entry_end_time = buffer_end_time
                 driving_buffer_start = None
                 driving_buffer_minutes = 0
@@ -871,8 +981,10 @@ class TripCreateView(generics.CreateAPIView):
             dropoff_end_time = current_time + timedelta(hours=1)
             if current_time < last_entry_end_time:
                 current_time = last_entry_end_time
+            current_step = all_steps[-1] if all_steps else None
+            coords = current_step['end_coords'] if current_step and current_step['end_coords'] else (None, None)
             print(f"Adding entry: ON_DUTY_NOT_DRIVING from {current_time} to {dropoff_end_time} at {current_distance} miles")
-            self.add_log_entry(log_entries, trip, current_time, dropoff_end_time, 'ON_DUTY_NOT_DRIVING', f"Dépôt à {trip.dropoff_location}", current_distance)
+            self.add_log_entry(log_entries, trip, current_time, dropoff_end_time, 'ON_DUTY_NOT_DRIVING', f"Dépôt à {trip.dropoff_location}", current_distance, coords[0], coords[1])
             last_entry_end_time = dropoff_end_time
             total_on_duty_hours += 1
 
@@ -880,7 +992,7 @@ class TripCreateView(generics.CreateAPIView):
         log_entries.sort(key=lambda x: (x.date, x.start_time))
         LogEntry.objects.bulk_create(log_entries)
 
-    def add_log_entry(self, log_entries, trip, start_time, end_time, duty_status, location, distance):
+    def add_log_entry(self, log_entries, trip, start_time, end_time, duty_status, location, distance, latitude=None, longitude=None):
         if start_time >= end_time:
             return
 
@@ -936,11 +1048,14 @@ class TripCreateView(generics.CreateAPIView):
                 duty_status=duty_status,
                 start_time=current_start.time(),
                 end_time=adjusted_end_time,
-                location=location_with_distance
+                location=location_with_distance,
+                latitude=latitude,
+                longitude=longitude
             ))
 
             current_start = current_end
 
+    
 class TripDetailView(generics.RetrieveAPIView):
     queryset = Trip.objects.all()
     serializer_class = TripSerializer
