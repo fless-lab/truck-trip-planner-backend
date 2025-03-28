@@ -406,8 +406,8 @@ class TripCreateView(generics.CreateAPIView):
                 if time_in_window >= MAX_DUTY_HOURS_PER_WINDOW:
                     if driving_buffer_minutes > 0:
                         buffer_end_time = current_time
-                        location = (f"Conduite de {trip.current_location} à {trip.pickup_location}" if in_initial_driving_phase
-                                    else "Conduite")
+                        location = (f"Driving from {trip.current_location} to {trip.pickup_location}" if in_initial_driving_phase
+                                    else "Driving")
                         # S'assurer que le start_time est >= last_entry_end_time
                         if driving_buffer_start < last_entry_end_time:
                             driving_buffer_start = last_entry_end_time
@@ -430,7 +430,7 @@ class TripCreateView(generics.CreateAPIView):
                     latitude = coords[0] if coords else None
                     longitude = coords[1] if coords else None
                     print(f"Adding entry: SLEEPER_BERTH from {current_time} to {end_time} at {current_distance} miles")
-                    self.add_log_entry(log_entries, trip, current_time, end_time, 'SLEEPER_BERTH', "Repos de 10h après 14h de service", current_distance, latitude, longitude)
+                    self.add_log_entry(log_entries, trip, current_time, end_time, 'SLEEPER_BERTH', "10h Rest after 14h Service", current_distance, latitude, longitude)
                     last_entry_end_time = end_time
                     current_time = end_time
                     trip_state["last_duty_start_time"] = None
@@ -440,8 +440,8 @@ class TripCreateView(generics.CreateAPIView):
                 if remaining_cycle_hours <= 0:
                     if driving_buffer_minutes > 0:
                         buffer_end_time = current_time
-                        location = (f"Conduite de {trip.current_location} à {trip.pickup_location}" if in_initial_driving_phase
-                                    else "Conduite")
+                        location = (f"Driving from {trip.current_location} to {trip.pickup_location}" if in_initial_driving_phase
+                                    else "Driving")
                         if driving_buffer_start < last_entry_end_time:
                             driving_buffer_start = last_entry_end_time
                         # Interpoler les coordonnées pour la distance actuelle
@@ -462,7 +462,7 @@ class TripCreateView(generics.CreateAPIView):
                     latitude = coords[0] if coords else None
                     longitude = coords[1] if coords else None
                     print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                    self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, latitude, longitude)
+                    self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "34h Restart", current_distance, latitude, longitude)
                     last_entry_end_time = end_time
                     current_time = end_time
                     total_on_duty_hours = 0
@@ -494,7 +494,7 @@ class TripCreateView(generics.CreateAPIView):
                     latitude = pickup_coords[0]  # 41.8781
                     longitude = pickup_coords[1]  # -87.6298
                     print(f"Adding entry: ON_DUTY_NOT_DRIVING from {current_time} to {pickup_end_time} at {current_distance} miles")
-                    self.add_log_entry(log_entries, trip, current_time, pickup_end_time, 'ON_DUTY_NOT_DRIVING', f"Ramassage à {trip.pickup_location}", current_distance, latitude, longitude)
+                    self.add_log_entry(log_entries, trip, current_time, pickup_end_time, 'ON_DUTY_NOT_DRIVING', f"Pickup at {trip.pickup_location}", current_distance, latitude, longitude)
                     last_entry_end_time = pickup_end_time
                     current_time = pickup_end_time
                     total_on_duty_hours += 1
@@ -510,7 +510,7 @@ class TripCreateView(generics.CreateAPIView):
                         latitude = coords[0] if coords else None
                         longitude = coords[1] if coords else None
                         print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, latitude, longitude)
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "34h Restart", current_distance, latitude, longitude)
                         last_entry_end_time = end_time
                         current_time = end_time
                         total_on_duty_hours = 0
@@ -527,7 +527,7 @@ class TripCreateView(generics.CreateAPIView):
                         latitude = coords[0] if coords else None
                         longitude = coords[1] if coords else None
                         print(f"Adding entry: SLEEPER_BERTH from {current_time} to {end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'SLEEPER_BERTH', "Repos de 10h après 14h de service", current_distance, latitude, longitude)
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'SLEEPER_BERTH', "10h Rest after 14h Service", current_distance, latitude, longitude)
                         last_entry_end_time = end_time
                         current_time = end_time
                         trip_state["last_duty_start_time"] = None
@@ -538,8 +538,8 @@ class TripCreateView(generics.CreateAPIView):
                 if driving_since_last_break >= MAX_DRIVING_HOURS_BEFORE_BREAK:
                     if driving_buffer_minutes > 0:
                         buffer_end_time = current_time
-                        location = (f"Conduite de {trip.current_location} à {trip.pickup_location}" if in_initial_driving_phase
-                                    else "Conduite")
+                        location = (f"Driving from {trip.current_location} to {trip.pickup_location}" if in_initial_driving_phase
+                                    else "Driving")
                         if driving_buffer_start < last_entry_end_time:
                             driving_buffer_start = last_entry_end_time
                         # Interpoler les coordonnées pour la distance actuelle
@@ -560,7 +560,7 @@ class TripCreateView(generics.CreateAPIView):
                     latitude = coords[0] if coords else None
                     longitude = coords[1] if coords else None
                     print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                    self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Pause de 30 minutes", current_distance, latitude, longitude)
+                    self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "30min Break", current_distance, latitude, longitude)
                     last_entry_end_time = end_time
                     current_time = end_time
                     driving_since_last_break = 0
@@ -575,7 +575,7 @@ class TripCreateView(generics.CreateAPIView):
                         latitude = coords[0] if coords else None
                         longitude = coords[1] if coords else None
                         print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, latitude, longitude)
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "34h Restart", current_distance, latitude, longitude)
                         last_entry_end_time = end_time
                         current_time = end_time
                         total_on_duty_hours = 0
@@ -618,7 +618,7 @@ class TripCreateView(generics.CreateAPIView):
                             latitude = coords[0] if coords else None
                             longitude = coords[1] if coords else None
                             print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, latitude, longitude)
+                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "34h Restart", current_distance, latitude, longitude)
                             last_entry_end_time = end_time
                             current_time = end_time
                             total_on_duty_hours = 0
@@ -667,7 +667,7 @@ class TripCreateView(generics.CreateAPIView):
                         latitude = coords[0] if coords else None
                         longitude = coords[1] if coords else None
                         print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, latitude, longitude)
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "34h Restart", current_distance, latitude, longitude)
                         last_entry_end_time = end_time
                         current_time = end_time
                         total_on_duty_hours = 0
@@ -725,7 +725,7 @@ class TripCreateView(generics.CreateAPIView):
                             latitude = coords[0] if coords else None
                             longitude = coords[1] if coords else None
                             print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, latitude, longitude)
+                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "34h Restart", current_distance, latitude, longitude)
                             last_entry_end_time = end_time
                             current_time = end_time
                             total_on_duty_hours = 0
@@ -740,7 +740,7 @@ class TripCreateView(generics.CreateAPIView):
                         latitude = coords[0] if coords else None
                         longitude = coords[1] if coords else None
                         print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Pause de 30 minutes", current_distance, latitude, longitude)
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "30min Break", current_distance, latitude, longitude)
                         last_entry_end_time = end_time
                         current_time = end_time
                         driving_since_last_break = 0
@@ -755,7 +755,7 @@ class TripCreateView(generics.CreateAPIView):
                             latitude = coords[0] if coords else None
                             longitude = coords[1] if coords else None
                             print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, latitude, longitude)
+                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "34h Restart", current_distance, latitude, longitude)
                             last_entry_end_time = end_time
                             current_time = end_time
                             total_on_duty_hours = 0
@@ -768,8 +768,8 @@ class TripCreateView(generics.CreateAPIView):
                     
                     if driving_buffer_minutes > 0:
                         buffer_end_time = current_time
-                        location = (f"Conduite de {trip.current_location} à {trip.pickup_location}" if in_initial_driving_phase
-                                    else "Conduite")
+                        location = (f"Driving from {trip.current_location} to {trip.pickup_location}" if in_initial_driving_phase
+                                    else "Driving")
                         if driving_buffer_start < last_entry_end_time:
                             driving_buffer_start = last_entry_end_time
                         # Interpoler les coordonnées pour la distance actuelle
@@ -782,8 +782,8 @@ class TripCreateView(generics.CreateAPIView):
                         driving_buffer_start = None
                         driving_buffer_minutes = 0
 
-                    location = (f"Conduite de {trip.current_location} à {trip.pickup_location} jusqu'au ravitaillement" if in_initial_driving_phase
-                                else "Conduite jusqu'au ravitaillement")
+                    location = (f"Driving from {trip.current_location} to {trip.pickup_location} until fuel stop" if in_initial_driving_phase
+                                else "Driving until fuel stop")
                     if current_time < last_entry_end_time:
                         current_time = last_entry_end_time
                     # Interpoler les coordonnées pour la distance actuelle
@@ -808,7 +808,7 @@ class TripCreateView(generics.CreateAPIView):
                         latitude = coords[0] if coords else None
                         longitude = coords[1] if coords else None
                         print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, latitude, longitude)
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "34h Restart", current_distance, latitude, longitude)
                         last_entry_end_time = end_time
                         current_time = end_time
                         total_on_duty_hours = 0
@@ -817,8 +817,8 @@ class TripCreateView(generics.CreateAPIView):
 
                     fueling_stops_made.add(next_fueling_mile)
                     end_time = current_time + timedelta(minutes=15)
-                    fueling_location = f"Arrêt de ravitaillement à {next_fueling_mile:.1f} miles"
-                    print(f"Ajout d'un arrêt de ravitaillement à {next_fueling_mile:.1f} miles")
+                    fueling_location = f"Fuel Stop at {next_fueling_mile:.1f} miles"
+                    print(f"Adding fuel stop at {next_fueling_mile:.1f} miles")
                     if current_time < last_entry_end_time:
                         current_time = last_entry_end_time
                     # Interpoler les coordonnées pour la distance actuelle
@@ -840,7 +840,7 @@ class TripCreateView(generics.CreateAPIView):
                         latitude = coords[0] if coords else None
                         longitude = coords[1] if coords else None
                         print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, latitude, longitude)
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "34h Restart", current_distance, latitude, longitude)
                         last_entry_end_time = end_time
                         current_time = end_time
                         total_on_duty_hours = 0
@@ -853,11 +853,11 @@ class TripCreateView(generics.CreateAPIView):
 
                 next_fueling_mile = (int(current_distance // FUELING_INTERVAL) + 1) * FUELING_INTERVAL
                 if next_fueling_mile not in fueling_stops_made and current_distance >= next_fueling_mile - 5:
-                    print(f"Arrêt de ravitaillement nécessaire à {next_fueling_mile} miles (distance actuelle: {current_distance})")
+                    print(f"Fuel stop required at {next_fueling_mile} miles (current distance: {current_distance})")
                     if driving_buffer_minutes > 0:
                         buffer_end_time = current_time
-                        location = (f"Conduite de {trip.current_location} à {trip.pickup_location}" if in_initial_driving_phase
-                                    else "Conduite")
+                        location = (f"Driving from {trip.current_location} to {trip.pickup_location}" if in_initial_driving_phase
+                                    else "Driving")
                         if driving_buffer_start < last_entry_end_time:
                             driving_buffer_start = last_entry_end_time
                         # Interpoler les coordonnées pour la distance actuelle
@@ -872,7 +872,7 @@ class TripCreateView(generics.CreateAPIView):
 
                     fueling_stops_made.add(next_fueling_mile)
                     end_time = current_time + timedelta(minutes=15)
-                    fueling_location = f"Arrêt de ravitaillement à {next_fueling_mile:.1f} miles"
+                    fueling_location = f"Fuel Stop at {next_fueling_mile:.1f} miles"
                     if current_time < last_entry_end_time:
                         current_time = last_entry_end_time
                     # Interpoler les coordonnées pour la distance actuelle
@@ -894,7 +894,7 @@ class TripCreateView(generics.CreateAPIView):
                         latitude = coords[0] if coords else None
                         longitude = coords[1] if coords else None
                         print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, latitude, longitude)
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "34h Restart", current_distance, latitude, longitude)
                         last_entry_end_time = end_time
                         current_time = end_time
                         total_on_duty_hours = 0
@@ -998,12 +998,12 @@ class TripCreateView(generics.CreateAPIView):
                         instruction = step_info['instruction']
                         
                         if in_initial_driving_phase and not pickup_completed:
-                            location = f"Conduite de {trip.current_location} à {trip.pickup_location}: {instruction} sur {road_name}"
+                            location = f"Driving from {trip.current_location} to {trip.pickup_location}: {instruction} on {road_name}"
                         else:
-                            location = f"Conduite de {trip.pickup_location} à {trip.dropoff_location}: {instruction} sur {road_name}"
+                            location = f"Driving from {trip.pickup_location} to {trip.dropoff_location}: {instruction} on {road_name}"
                     else:
-                        location = (f"Conduite de {trip.current_location} à {trip.pickup_location}" if in_initial_driving_phase and not pickup_completed
-                                    else f"Conduite de {trip.pickup_location} à {trip.dropoff_location}")
+                        location = (f"Driving from {trip.current_location} to {trip.pickup_location}" if in_initial_driving_phase and not pickup_completed
+                                    else f"Driving from {trip.pickup_location} to {trip.dropoff_location}")
                     
                     if driving_buffer_start < last_entry_end_time:
                         driving_buffer_start = last_entry_end_time
@@ -1022,8 +1022,8 @@ class TripCreateView(generics.CreateAPIView):
                 if window_driving_hours >= MAX_DRIVING_HOURS_PER_WINDOW:
                     if driving_buffer_minutes > 0:
                         buffer_end_time = current_time
-                        location = (f"Conduite de {trip.current_location} à {trip.pickup_location}" if in_initial_driving_phase
-                                    else "Conduite")
+                        location = (f"Driving from {trip.current_location} to {trip.pickup_location}" if in_initial_driving_phase
+                                    else "Driving")
                         if driving_buffer_start < last_entry_end_time:
                             driving_buffer_start = last_entry_end_time
                         # Interpoler les coordonnées pour la distance actuelle
@@ -1046,7 +1046,7 @@ class TripCreateView(generics.CreateAPIView):
                         latitude = coords[0] if coords else None
                         longitude = coords[1] if coords else None
                         print(f"Adding entry: ON_DUTY_NOT_DRIVING from {current_time} to {end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'ON_DUTY_NOT_DRIVING', "Fin de fenêtre de 14h", current_distance, latitude, longitude)
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'ON_DUTY_NOT_DRIVING', "14h Window End", current_distance, latitude, longitude)
                         last_entry_end_time = end_time
                         current_time = end_time
                         total_on_duty_hours += time_to_window_end
@@ -1060,7 +1060,7 @@ class TripCreateView(generics.CreateAPIView):
                             latitude = coords[0] if coords else None
                             longitude = coords[1] if coords else None
                             print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, latitude, longitude)
+                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "34h Restart", current_distance, latitude, longitude)
                             last_entry_end_time = end_time
                             current_time = end_time
                             total_on_duty_hours = 0
@@ -1075,7 +1075,7 @@ class TripCreateView(generics.CreateAPIView):
                     latitude = coords[0] if coords else None
                     longitude = coords[1] if coords else None
                     print(f"Adding entry: SLEEPER_BERTH from {current_time} to {end_time} at {current_distance} miles")
-                    self.add_log_entry(log_entries, trip, current_time, end_time, 'SLEEPER_BERTH', "Repos de 10h après 11h de conduite", current_distance, latitude, longitude)
+                    self.add_log_entry(log_entries, trip, current_time, end_time, 'SLEEPER_BERTH', "10h Rest after 11h Driving", current_distance, latitude, longitude)
                     last_entry_end_time = end_time
                     current_time = end_time
                     trip_state["last_duty_start_time"] = None
@@ -1105,7 +1105,7 @@ class TripCreateView(generics.CreateAPIView):
                 latitude = coords[0] if coords else None
                 longitude = coords[1] if coords else None
                 print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, latitude, longitude)
+                self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "34h Restart", current_distance, latitude, longitude)
                 last_entry_end_time = end_time
                 current_time = end_time
                 total_on_duty_hours = 0
@@ -1163,7 +1163,7 @@ class TripCreateView(generics.CreateAPIView):
             latitude = coords[0] if coords else None
             longitude = coords[1] if coords else None
             print(f"Adding entry: ON_DUTY_NOT_DRIVING from {current_time} to {dropoff_end_time} at {current_distance} miles")
-            self.add_log_entry(log_entries, trip, current_time, dropoff_end_time, 'ON_DUTY_NOT_DRIVING', f"Dépôt à {trip.dropoff_location}", current_distance, latitude, longitude)
+            self.add_log_entry(log_entries, trip, current_time, dropoff_end_time, 'ON_DUTY_NOT_DRIVING', f"Dropoff at {trip.dropoff_location}", current_distance, latitude, longitude)
             last_entry_end_time = dropoff_end_time
             total_on_duty_hours += 1
 
