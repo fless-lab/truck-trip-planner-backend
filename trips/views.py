@@ -295,6 +295,13 @@ class TripCreateView(generics.CreateAPIView):
         # Décoder les polylines pour obtenir les coordonnées
         coords_to_pickup = polyline.decode(trip.route_geometry_to_pickup) if trip.route_geometry_to_pickup else []
         coords_to_dropoff = polyline.decode(trip.route_geometry_to_dropoff)
+        
+        # Ajouter un message de débogage pour vérifier le premier point
+        if coords_to_pickup:
+            print(f"Premier point de coords_to_pickup : {coords_to_pickup[0]} (devrait être proche de {CITIES_WITH_COORDS[trip.current_location]})")
+        if coords_to_dropoff:
+            print(f"Premier point de coords_to_dropoff : {coords_to_dropoff[0]} (devrait être proche de {CITIES_WITH_COORDS[trip.pickup_location]})")
+        
         all_coords = coords_to_pickup + coords_to_dropoff if coords_to_pickup else coords_to_dropoff
         
         # Calculer les distances cumulatives pour chaque partie du trajet
@@ -352,6 +359,27 @@ class TripCreateView(generics.CreateAPIView):
         total_on_duty_hours = current_cycle_hours
         fueling_stops_made = set()
         log_entries = []
+
+        # Ajouter un événement initial pour marquer le début du trajet
+        initial_end_time = current_time + timedelta(seconds=1)  # 15 minutes pour le départ
+        initial_coords = CITIES_WITH_COORDS[trip.current_location]  # Coordonnées de New York, NY
+        initial_latitude = initial_coords[0]  # 40.7128
+        initial_longitude = initial_coords[1]  # -74.0060
+        print(f"Adding initial entry: DRIVING from {current_time} to {initial_end_time} at 0 miles")
+        self.add_log_entry(
+            log_entries,
+            trip,
+            current_time,
+            initial_end_time,
+            'DRIVING',
+            f"Départ de {trip.current_location}",
+            0,  # Distance = 0 miles
+            initial_latitude,
+            initial_longitude
+        )
+        last_entry_end_time = initial_end_time
+        current_time = initial_end_time
+        # total_on_duty_hours += 0.25  # Ajouter 15 minutes (0.25 heures) au total des heures de service
 
         trip_state = {"last_duty_start_time": None}
         driving_buffer_start = None
@@ -455,6 +483,8 @@ class TripCreateView(generics.CreateAPIView):
                         last_entry_end_time = buffer_end_time
                         driving_buffer_start = None
                         driving_buffer_minutes = 0
+                        
+                    current_distance = distance_to_pickup
 
                     pickup_end_time = current_time + timedelta(hours=1)
                     if current_time < last_entry_end_time:
@@ -1140,6 +1170,7 @@ class TripCreateView(generics.CreateAPIView):
         # Trier les entrées par date et heure de début pour garantir un ordre chronologique
         log_entries.sort(key=lambda x: (x.date, x.start_time))
         LogEntry.objects.bulk_create(log_entries)
+
 
     def add_log_entry(self, log_entries, trip, start_time, end_time, duty_status, location, distance, latitude=None, longitude=None):
         if start_time >= end_time:
