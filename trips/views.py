@@ -225,6 +225,60 @@ class TripCreateView(generics.CreateAPIView):
             
             return distance_miles, duration_hours, None
 
+    def interpolate_coords(self, route_coords, route_distances, target_distance):
+        """Interpole les coordonnées pour une distance donnée le long de la polyline.
+        
+        Args:
+            route_coords (list): Liste de tuples (lat, lon) représentant les points de la polyline.
+            route_distances (list): Liste des distances cumulatives le long de la polyline.
+            target_distance (float): Distance cible en miles.
+            
+        Returns:
+            tuple: (latitude, longitude) interpolée, ou None si l'interpolation n'est pas possible.
+        """
+        if not route_coords or not route_distances or len(route_coords) != len(route_distances):
+            return None
+        
+        if target_distance < 0:
+            return None
+        
+        total_distance = route_distances[-1]
+        if target_distance >= total_distance:
+            return route_coords[-1]  # Retourner le dernier point si la distance dépasse
+        
+        # Trouver les deux points entre lesquels interpoler
+        for i in range(len(route_distances) - 1):
+            if route_distances[i] <= target_distance <= route_distances[i + 1]:
+                # Calculer la fraction entre les deux points
+                fraction = (target_distance - route_distances[i]) / (route_distances[i + 1] - route_distances[i])
+                # Interpoler la latitude et la longitude
+                lat = route_coords[i][0] + fraction * (route_coords[i + 1][0] - route_coords[i][0])
+                lon = route_coords[i][1] + fraction * (route_coords[i + 1][1] - route_coords[i][1])
+                return (lat, lon)
+        return None
+
+    def calculate_cumulative_distances(self, coords):
+        """Calcule les distances cumulatives le long d'une liste de coordonnées (latitude, longitude).
+        
+        Args:
+            coords (list): Liste de tuples (lat, lon) représentant les points de la polyline.
+            
+        Returns:
+            list: Liste des distances cumulatives en miles.
+        """
+        from geopy.distance import geodesic
+        
+        if not coords:
+            return []
+        
+        distances = [0.0]  # Distance cumulée commence à 0
+        for i in range(1, len(coords)):
+            point1 = coords[i-1]  # (lat1, lon1)
+            point2 = coords[i]    # (lat2, lon2)
+            dist = geodesic(point1, point2).miles  # Distance en miles
+            distances.append(distances[-1] + dist)  # Ajouter à la distance cumulée
+        return distances
+
     def generate_eld_logs(self, trip, distance_to_pickup, distance_to_dropoff, current_cycle_hours):
         current_time = trip.start_time
         last_entry_end_time = current_time  # Suivi de la fin de la dernière entrée pour éviter les retours en arrière
@@ -242,6 +296,17 @@ class TripCreateView(generics.CreateAPIView):
         coords_to_pickup = polyline.decode(trip.route_geometry_to_pickup) if trip.route_geometry_to_pickup else []
         coords_to_dropoff = polyline.decode(trip.route_geometry_to_dropoff)
         all_coords = coords_to_pickup + coords_to_dropoff if coords_to_pickup else coords_to_dropoff
+        
+        # Calculer les distances cumulatives pour chaque partie du trajet
+        distances_to_pickup = self.calculate_cumulative_distances(coords_to_pickup)
+        distances_to_dropoff = self.calculate_cumulative_distances(coords_to_dropoff)
+        
+        # Combiner les distances cumulatives
+        if distances_to_pickup:
+            # Ajuster les distances de la deuxième partie en ajoutant la distance totale de la première partie
+            all_distances = distances_to_pickup + [d + distances_to_pickup[-1] for d in distances_to_dropoff]
+        else:
+            all_distances = distances_to_dropoff
         
         # Création d'une liste combinée de tous les steps du trajet pour une approche plus granulaire
         all_steps = []
@@ -318,10 +383,12 @@ class TripCreateView(generics.CreateAPIView):
                         # S'assurer que le start_time est >= last_entry_end_time
                         if driving_buffer_start < last_entry_end_time:
                             driving_buffer_start = last_entry_end_time
-                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                        # Interpoler les coordonnées pour la distance actuelle
+                        coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                        latitude = coords[0] if coords else None
+                        longitude = coords[1] if coords else None
                         print(f"Adding entry: DRIVING from {driving_buffer_start} to {buffer_end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance, coords[0], coords[1])
+                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance, latitude, longitude)
                         last_entry_end_time = buffer_end_time
                         driving_buffer_start = None
                         driving_buffer_minutes = 0
@@ -330,10 +397,12 @@ class TripCreateView(generics.CreateAPIView):
                     # S'assurer que le start_time est >= last_entry_end_time
                     if current_time < last_entry_end_time:
                         current_time = last_entry_end_time
-                    current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                    coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                    # Interpoler les coordonnées pour la distance actuelle
+                    coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                    latitude = coords[0] if coords else None
+                    longitude = coords[1] if coords else None
                     print(f"Adding entry: SLEEPER_BERTH from {current_time} to {end_time} at {current_distance} miles")
-                    self.add_log_entry(log_entries, trip, current_time, end_time, 'SLEEPER_BERTH', "Repos de 10h après 14h de service", current_distance, coords[0], coords[1])
+                    self.add_log_entry(log_entries, trip, current_time, end_time, 'SLEEPER_BERTH', "Repos de 10h après 14h de service", current_distance, latitude, longitude)
                     last_entry_end_time = end_time
                     current_time = end_time
                     trip_state["last_duty_start_time"] = None
@@ -347,10 +416,12 @@ class TripCreateView(generics.CreateAPIView):
                                     else "Conduite")
                         if driving_buffer_start < last_entry_end_time:
                             driving_buffer_start = last_entry_end_time
-                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                        # Interpoler les coordonnées pour la distance actuelle
+                        coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                        latitude = coords[0] if coords else None
+                        longitude = coords[1] if coords else None
                         print(f"Adding entry: DRIVING from {driving_buffer_start} to {buffer_end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance, coords[0], coords[1])
+                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance, latitude, longitude)
                         last_entry_end_time = buffer_end_time
                         driving_buffer_start = None
                         driving_buffer_minutes = 0
@@ -358,10 +429,12 @@ class TripCreateView(generics.CreateAPIView):
                     end_time = current_time + timedelta(hours=RESTART_HOURS)
                     if current_time < last_entry_end_time:
                         current_time = last_entry_end_time
-                    current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                    coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                    # Interpoler les coordonnées pour la distance actuelle
+                    coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                    latitude = coords[0] if coords else None
+                    longitude = coords[1] if coords else None
                     print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                    self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, coords[0], coords[1])
+                    self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, latitude, longitude)
                     last_entry_end_time = end_time
                     current_time = end_time
                     total_on_duty_hours = 0
@@ -373,10 +446,12 @@ class TripCreateView(generics.CreateAPIView):
                         buffer_end_time = current_time
                         if driving_buffer_start < last_entry_end_time:
                             driving_buffer_start = last_entry_end_time
-                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                        # Interpoler les coordonnées pour la distance actuelle
+                        coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                        latitude = coords[0] if coords else None
+                        longitude = coords[1] if coords else None
                         print(f"Adding entry: DRIVING from {driving_buffer_start} to {buffer_end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', f"Conduite de {trip.current_location} à {trip.pickup_location}", current_distance, coords[0], coords[1])
+                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', f"Conduite de {trip.current_location} à {trip.pickup_location}", current_distance, latitude, longitude)
                         last_entry_end_time = buffer_end_time
                         driving_buffer_start = None
                         driving_buffer_minutes = 0
@@ -384,10 +459,12 @@ class TripCreateView(generics.CreateAPIView):
                     pickup_end_time = current_time + timedelta(hours=1)
                     if current_time < last_entry_end_time:
                         current_time = last_entry_end_time
-                    current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                    coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                    # Interpoler les coordonnées pour la distance actuelle
+                    coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                    latitude = coords[0] if coords else None
+                    longitude = coords[1] if coords else None
                     print(f"Adding entry: ON_DUTY_NOT_DRIVING from {current_time} to {pickup_end_time} at {current_distance} miles")
-                    self.add_log_entry(log_entries, trip, current_time, pickup_end_time, 'ON_DUTY_NOT_DRIVING', f"Ramassage à {trip.pickup_location}", current_distance, coords[0], coords[1])
+                    self.add_log_entry(log_entries, trip, current_time, pickup_end_time, 'ON_DUTY_NOT_DRIVING', f"Ramassage à {trip.pickup_location}", current_distance, latitude, longitude)
                     last_entry_end_time = pickup_end_time
                     current_time = pickup_end_time
                     total_on_duty_hours += 1
@@ -398,10 +475,12 @@ class TripCreateView(generics.CreateAPIView):
                         end_time = current_time + timedelta(hours=RESTART_HOURS)
                         if current_time < last_entry_end_time:
                             current_time = last_entry_end_time
-                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                        # Interpoler les coordonnées pour la distance actuelle
+                        coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                        latitude = coords[0] if coords else None
+                        longitude = coords[1] if coords else None
                         print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, coords[0], coords[1])
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, latitude, longitude)
                         last_entry_end_time = end_time
                         current_time = end_time
                         total_on_duty_hours = 0
@@ -413,10 +492,12 @@ class TripCreateView(generics.CreateAPIView):
                         end_time = current_time + timedelta(hours=MINIMUM_REST_HOURS)
                         if current_time < last_entry_end_time:
                             current_time = last_entry_end_time
-                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                        # Interpoler les coordonnées pour la distance actuelle
+                        coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                        latitude = coords[0] if coords else None
+                        longitude = coords[1] if coords else None
                         print(f"Adding entry: SLEEPER_BERTH from {current_time} to {end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'SLEEPER_BERTH', "Repos de 10h après 14h de service", current_distance,coords[0], coords[1])
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'SLEEPER_BERTH', "Repos de 10h après 14h de service", current_distance, latitude, longitude)
                         last_entry_end_time = end_time
                         current_time = end_time
                         trip_state["last_duty_start_time"] = None
@@ -431,10 +512,12 @@ class TripCreateView(generics.CreateAPIView):
                                     else "Conduite")
                         if driving_buffer_start < last_entry_end_time:
                             driving_buffer_start = last_entry_end_time
-                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                        # Interpoler les coordonnées pour la distance actuelle
+                        coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                        latitude = coords[0] if coords else None
+                        longitude = coords[1] if coords else None
                         print(f"Adding entry: DRIVING from {driving_buffer_start} to {buffer_end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance, coords[0], coords[1])
+                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance, latitude, longitude)
                         last_entry_end_time = buffer_end_time
                         driving_buffer_start = None
                         driving_buffer_minutes = 0
@@ -442,10 +525,12 @@ class TripCreateView(generics.CreateAPIView):
                     end_time = current_time + timedelta(minutes=30)
                     if current_time < last_entry_end_time:
                         current_time = last_entry_end_time
-                    current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                    coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                    # Interpoler les coordonnées pour la distance actuelle
+                    coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                    latitude = coords[0] if coords else None
+                    longitude = coords[1] if coords else None
                     print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                    self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Pause de 30 minutes", current_distance, coords[0], coords[1])
+                    self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Pause de 30 minutes", current_distance, latitude, longitude)
                     last_entry_end_time = end_time
                     current_time = end_time
                     driving_since_last_break = 0
@@ -455,10 +540,12 @@ class TripCreateView(generics.CreateAPIView):
                         end_time = current_time + timedelta(hours=RESTART_HOURS)
                         if current_time < last_entry_end_time:
                             current_time = last_entry_end_time
-                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                        # Interpoler les coordonnées pour la distance actuelle
+                        coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                        latitude = coords[0] if coords else None
+                        longitude = coords[1] if coords else None
                         print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, coords[0], coords[1])
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, latitude, longitude)
                         last_entry_end_time = end_time
                         current_time = end_time
                         total_on_duty_hours = 0
@@ -483,10 +570,12 @@ class TripCreateView(generics.CreateAPIView):
                                             else "Conduite")
                                 if driving_buffer_start < last_entry_end_time:
                                     driving_buffer_start = last_entry_end_time
-                                current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                                coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                                # Interpoler les coordonnées pour la distance actuelle
+                                coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                                latitude = coords[0] if coords else None
+                                longitude = coords[1] if coords else None
                                 print(f"Adding entry: DRIVING from {driving_buffer_start} to {buffer_end_time} at {current_distance} miles")
-                                self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance, coords[0], coords[1])
+                                self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance, latitude, longitude)
                                 last_entry_end_time = buffer_end_time
                                 driving_buffer_start = None
                                 driving_buffer_minutes = 0
@@ -494,10 +583,12 @@ class TripCreateView(generics.CreateAPIView):
                             end_time = current_time + timedelta(hours=RESTART_HOURS)
                             if current_time < last_entry_end_time:
                                 current_time = last_entry_end_time
-                            current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                            coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                            # Interpoler les coordonnées pour la distance actuelle
+                            coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                            latitude = coords[0] if coords else None
+                            longitude = coords[1] if coords else None
                             print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, coords[0], coords[1])
+                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, latitude, longitude)
                             last_entry_end_time = end_time
                             current_time = end_time
                             total_on_duty_hours = 0
@@ -510,10 +601,12 @@ class TripCreateView(generics.CreateAPIView):
                                         else "Conduite")
                             if driving_buffer_start < last_entry_end_time:
                                 driving_buffer_start = last_entry_end_time
-                            current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                            coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                            # Interpoler les coordonnées pour la distance actuelle
+                            coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                            latitude = coords[0] if coords else None
+                            longitude = coords[1] if coords else None
                             print(f"Adding entry: DRIVING from {driving_buffer_start} to {buffer_end_time} at {current_distance} miles")
-                            self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance, coords[0], coords[1])
+                            self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance, latitude, longitude)
                             last_entry_end_time = buffer_end_time
                             driving_buffer_start = None
                             driving_buffer_minutes = 0
@@ -523,10 +616,12 @@ class TripCreateView(generics.CreateAPIView):
                                     else "Conduite jusqu'à limite du cycle")
                         if current_time < last_entry_end_time:
                             current_time = last_entry_end_time
-                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                        # Interpoler les coordonnées pour la distance actuelle
+                        coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                        latitude = coords[0] if coords else None
+                        longitude = coords[1] if coords else None
                         print(f"Adding entry: DRIVING from {current_time} to {cycle_limit_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, current_time, cycle_limit_time, 'DRIVING', location, current_distance, coords[0], coords[1])
+                        self.add_log_entry(log_entries, trip, current_time, cycle_limit_time, 'DRIVING', location, current_distance, latitude, longitude)
                         last_entry_end_time = cycle_limit_time
                         current_time = cycle_limit_time
                         current_distance += minutes_to_cycle_limit * (AVERAGE_SPEED / 60)
@@ -537,10 +632,12 @@ class TripCreateView(generics.CreateAPIView):
                         end_time = current_time + timedelta(hours=RESTART_HOURS)
                         if current_time < last_entry_end_time:
                             current_time = last_entry_end_time
-                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                        # Interpoler les coordonnées pour la distance actuelle
+                        coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                        latitude = coords[0] if coords else None
+                        longitude = coords[1] if coords else None
                         print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, coords[0], coords[1])
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, latitude, longitude)
                         last_entry_end_time = end_time
                         current_time = end_time
                         total_on_duty_hours = 0
@@ -562,10 +659,12 @@ class TripCreateView(generics.CreateAPIView):
                                         else "Conduite")
                             if driving_buffer_start < last_entry_end_time:
                                 driving_buffer_start = last_entry_end_time
-                            current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                            coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                            # Interpoler les coordonnées pour la distance actuelle
+                            coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                            latitude = coords[0] if coords else None
+                            longitude = coords[1] if coords else None
                             print(f"Adding entry: DRIVING from {driving_buffer_start} to {buffer_end_time} at {current_distance} miles")
-                            self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance, coords[0], coords[1])
+                            self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance, latitude, longitude)
                             last_entry_end_time = buffer_end_time
                             driving_buffer_start = None
                             driving_buffer_minutes = 0
@@ -574,10 +673,12 @@ class TripCreateView(generics.CreateAPIView):
                                     else "Conduite jusqu'à la pause")
                         if current_time < last_entry_end_time:
                             current_time = last_entry_end_time
-                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                        # Interpoler les coordonnées pour la distance actuelle
+                        coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                        latitude = coords[0] if coords else None
+                        longitude = coords[1] if coords else None
                         print(f"Adding entry: DRIVING from {current_time} to {end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'DRIVING', location, current_distance, coords[0], coords[1])
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'DRIVING', location, current_distance, latitude, longitude)
                         last_entry_end_time = end_time
                         current_time = end_time
                         current_distance += minutes_to_break * (AVERAGE_SPEED / 60)
@@ -589,10 +690,12 @@ class TripCreateView(generics.CreateAPIView):
                             end_time = current_time + timedelta(hours=RESTART_HOURS)
                             if current_time < last_entry_end_time:
                                 current_time = last_entry_end_time
-                            current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                            coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                            # Interpoler les coordonnées pour la distance actuelle
+                            coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                            latitude = coords[0] if coords else None
+                            longitude = coords[1] if coords else None
                             print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, coords[0], coords[1])
+                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, latitude, longitude)
                             last_entry_end_time = end_time
                             current_time = end_time
                             total_on_duty_hours = 0
@@ -602,10 +705,12 @@ class TripCreateView(generics.CreateAPIView):
                         end_time = current_time + timedelta(minutes=30)
                         if current_time < last_entry_end_time:
                             current_time = last_entry_end_time
-                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                        # Interpoler les coordonnées pour la distance actuelle
+                        coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                        latitude = coords[0] if coords else None
+                        longitude = coords[1] if coords else None
                         print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Pause de 30 minutes", current_distance, coords[0], coords[1])
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Pause de 30 minutes", current_distance, latitude, longitude)
                         last_entry_end_time = end_time
                         current_time = end_time
                         driving_since_last_break = 0
@@ -615,10 +720,12 @@ class TripCreateView(generics.CreateAPIView):
                             end_time = current_time + timedelta(hours=RESTART_HOURS)
                             if current_time < last_entry_end_time:
                                 current_time = last_entry_end_time
-                            current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                            coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                            # Interpoler les coordonnées pour la distance actuelle
+                            coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                            latitude = coords[0] if coords else None
+                            longitude = coords[1] if coords else None
                             print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, coords[0], coords[1])
+                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, latitude, longitude)
                             last_entry_end_time = end_time
                             current_time = end_time
                             total_on_duty_hours = 0
@@ -635,10 +742,12 @@ class TripCreateView(generics.CreateAPIView):
                                     else "Conduite")
                         if driving_buffer_start < last_entry_end_time:
                             driving_buffer_start = last_entry_end_time
-                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                        # Interpoler les coordonnées pour la distance actuelle
+                        coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                        latitude = coords[0] if coords else None
+                        longitude = coords[1] if coords else None
                         print(f"Adding entry: DRIVING from {driving_buffer_start} to {buffer_end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance, coords[0], coords[1])
+                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance, latitude, longitude)
                         last_entry_end_time = buffer_end_time
                         driving_buffer_start = None
                         driving_buffer_minutes = 0
@@ -647,10 +756,12 @@ class TripCreateView(generics.CreateAPIView):
                                 else "Conduite jusqu'au ravitaillement")
                     if current_time < last_entry_end_time:
                         current_time = last_entry_end_time
-                    current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                    coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                    # Interpoler les coordonnées pour la distance actuelle
+                    coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                    latitude = coords[0] if coords else None
+                    longitude = coords[1] if coords else None
                     print(f"Adding entry: DRIVING from {current_time} to {end_time} at {current_distance} miles")
-                    self.add_log_entry(log_entries, trip, current_time, end_time, 'DRIVING', location, current_distance, coords[0], coords[1])
+                    self.add_log_entry(log_entries, trip, current_time, end_time, 'DRIVING', location, current_distance, latitude, longitude)
                     last_entry_end_time = end_time
                     current_time = end_time
                     current_distance += minutes_to_fuel * (AVERAGE_SPEED / 60)
@@ -662,10 +773,12 @@ class TripCreateView(generics.CreateAPIView):
                         end_time = current_time + timedelta(hours=RESTART_HOURS)
                         if current_time < last_entry_end_time:
                             current_time = last_entry_end_time
-                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                        # Interpoler les coordonnées pour la distance actuelle
+                        coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                        latitude = coords[0] if coords else None
+                        longitude = coords[1] if coords else None
                         print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, coords[0], coords[1])
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, latitude, longitude)
                         last_entry_end_time = end_time
                         current_time = end_time
                         total_on_duty_hours = 0
@@ -678,10 +791,12 @@ class TripCreateView(generics.CreateAPIView):
                     print(f"Ajout d'un arrêt de ravitaillement à {next_fueling_mile:.1f} miles")
                     if current_time < last_entry_end_time:
                         current_time = last_entry_end_time
-                    current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                    coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                    # Interpoler les coordonnées pour la distance actuelle
+                    coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                    latitude = coords[0] if coords else None
+                    longitude = coords[1] if coords else None
                     print(f"Adding entry: ON_DUTY_NOT_DRIVING from {current_time} to {end_time} at {current_distance} miles")
-                    self.add_log_entry(log_entries, trip, current_time, end_time, 'ON_DUTY_NOT_DRIVING', fueling_location, current_distance, coords[0], coords[1])
+                    self.add_log_entry(log_entries, trip, current_time, end_time, 'ON_DUTY_NOT_DRIVING', fueling_location, current_distance, latitude, longitude)
                     last_entry_end_time = end_time
                     current_time = end_time
                     total_on_duty_hours += 0.25
@@ -690,10 +805,12 @@ class TripCreateView(generics.CreateAPIView):
                         end_time = current_time + timedelta(hours=RESTART_HOURS)
                         if current_time < last_entry_end_time:
                             current_time = last_entry_end_time
-                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                        # Interpoler les coordonnées pour la distance actuelle
+                        coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                        latitude = coords[0] if coords else None
+                        longitude = coords[1] if coords else None
                         print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, coords[0], coords[1])
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, latitude, longitude)
                         last_entry_end_time = end_time
                         current_time = end_time
                         total_on_duty_hours = 0
@@ -713,10 +830,12 @@ class TripCreateView(generics.CreateAPIView):
                                     else "Conduite")
                         if driving_buffer_start < last_entry_end_time:
                             driving_buffer_start = last_entry_end_time
-                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                        # Interpoler les coordonnées pour la distance actuelle
+                        coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                        latitude = coords[0] if coords else None
+                        longitude = coords[1] if coords else None
                         print(f"Adding entry: DRIVING from {driving_buffer_start} to {buffer_end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance, coords[0], coords[1])
+                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance, latitude, longitude)
                         last_entry_end_time = buffer_end_time
                         driving_buffer_start = None
                         driving_buffer_minutes = 0
@@ -726,10 +845,12 @@ class TripCreateView(generics.CreateAPIView):
                     fueling_location = f"Arrêt de ravitaillement à {next_fueling_mile:.1f} miles"
                     if current_time < last_entry_end_time:
                         current_time = last_entry_end_time
-                    current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                    coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                    # Interpoler les coordonnées pour la distance actuelle
+                    coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                    latitude = coords[0] if coords else None
+                    longitude = coords[1] if coords else None
                     print(f"Adding entry: ON_DUTY_NOT_DRIVING from {current_time} to {end_time} at {current_distance} miles")
-                    self.add_log_entry(log_entries, trip, current_time, end_time, 'ON_DUTY_NOT_DRIVING', fueling_location, current_distance, coords[0], coords[1])
+                    self.add_log_entry(log_entries, trip, current_time, end_time, 'ON_DUTY_NOT_DRIVING', fueling_location, current_distance, latitude, longitude)
                     last_entry_end_time = end_time
                     current_time = end_time
                     total_on_duty_hours += 0.25
@@ -738,10 +859,12 @@ class TripCreateView(generics.CreateAPIView):
                         end_time = current_time + timedelta(hours=RESTART_HOURS)
                         if current_time < last_entry_end_time:
                             current_time = last_entry_end_time
-                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                        # Interpoler les coordonnées pour la distance actuelle
+                        coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                        latitude = coords[0] if coords else None
+                        longitude = coords[1] if coords else None
                         print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, coords[0], coords[1])
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, latitude, longitude)
                         last_entry_end_time = end_time
                         current_time = end_time
                         total_on_duty_hours = 0
@@ -803,10 +926,12 @@ class TripCreateView(generics.CreateAPIView):
                                         else "Conduite")
                             if driving_buffer_start < last_entry_end_time:
                                 driving_buffer_start = last_entry_end_time
-                            current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                            coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                            # Interpoler les coordonnées pour la distance actuelle
+                            coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                            latitude = coords[0] if coords else None
+                            longitude = coords[1] if coords else None
                             print(f"Adding entry: DRIVING from {driving_buffer_start} to {buffer_end_time} at {current_distance} miles")
-                            self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance, coords[0], coords[1])
+                            self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance, latitude, longitude)
                             last_entry_end_time = buffer_end_time
                             driving_buffer_start = None
                             driving_buffer_minutes = 0
@@ -814,10 +939,12 @@ class TripCreateView(generics.CreateAPIView):
                         end_time = current_time + timedelta(minutes=1) + timedelta(hours=RESTART_HOURS)
                         if current_time < last_entry_end_time:
                             current_time = last_entry_end_time
-                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                        # Interpoler les coordonnées pour la distance actuelle
+                        coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                        latitude = coords[0] if coords else None
+                        longitude = coords[1] if coords else None
                         print(f"Adding entry: OFF_DUTY from {current_time + timedelta(minutes=1)} to {end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, current_time + timedelta(minutes=1), end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, coords[0], coords[1])
+                        self.add_log_entry(log_entries, trip, current_time + timedelta(minutes=1), end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, latitude, longitude)
                         last_entry_end_time = end_time
                         current_time = end_time
                         total_on_duty_hours = 0
@@ -839,7 +966,6 @@ class TripCreateView(generics.CreateAPIView):
                         step_info = all_steps[current_step_index - 1]
                         road_name = step_info['name'] if step_info['name'] and step_info['name'] != '-' else 'route non nommée'
                         instruction = step_info['instruction']
-                        coords = step_info['end_coords'] if step_info['end_coords'] else (None, None)
                         
                         if in_initial_driving_phase and not pickup_completed:
                             location = f"Conduite de {trip.current_location} à {trip.pickup_location}: {instruction} sur {road_name}"
@@ -848,12 +974,15 @@ class TripCreateView(generics.CreateAPIView):
                     else:
                         location = (f"Conduite de {trip.current_location} à {trip.pickup_location}" if in_initial_driving_phase and not pickup_completed
                                     else f"Conduite de {trip.pickup_location} à {trip.dropoff_location}")
-                        coords = all_steps[-1]['end_coords'] if all_steps else (None, None)
                     
                     if driving_buffer_start < last_entry_end_time:
                         driving_buffer_start = last_entry_end_time
+                    # Interpoler les coordonnées pour la distance actuelle
+                    coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                    latitude = coords[0] if coords else None
+                    longitude = coords[1] if coords else None
                     print(f"Adding entry: DRIVING from {driving_buffer_start} to {buffer_end_time} at {current_distance} miles")
-                    self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance, coords[0], coords[1])
+                    self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance, latitude, longitude)
                     last_entry_end_time = buffer_end_time
                     driving_buffer_start = buffer_end_time
                     driving_buffer_minutes = 0
@@ -867,10 +996,12 @@ class TripCreateView(generics.CreateAPIView):
                                     else "Conduite")
                         if driving_buffer_start < last_entry_end_time:
                             driving_buffer_start = last_entry_end_time
-                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                        # Interpoler les coordonnées pour la distance actuelle
+                        coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                        latitude = coords[0] if coords else None
+                        longitude = coords[1] if coords else None
                         print(f"Adding entry: DRIVING from {driving_buffer_start} to {buffer_end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance, coords[0], coords[1])
+                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', location, current_distance, latitude, longitude)
                         last_entry_end_time = buffer_end_time
                         driving_buffer_start = None
                         driving_buffer_minutes = 0
@@ -880,10 +1011,12 @@ class TripCreateView(generics.CreateAPIView):
                         end_time = current_time + timedelta(hours=time_to_window_end)
                         if current_time < last_entry_end_time:
                             current_time = last_entry_end_time
-                        current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                        coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                        # Interpoler les coordonnées pour la distance actuelle
+                        coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                        latitude = coords[0] if coords else None
+                        longitude = coords[1] if coords else None
                         print(f"Adding entry: ON_DUTY_NOT_DRIVING from {current_time} to {end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, current_time, end_time, 'ON_DUTY_NOT_DRIVING', "Fin de fenêtre de 14h", current_distance, coords[0], coords[1])
+                        self.add_log_entry(log_entries, trip, current_time, end_time, 'ON_DUTY_NOT_DRIVING', "Fin de fenêtre de 14h", current_distance, latitude, longitude)
                         last_entry_end_time = end_time
                         current_time = end_time
                         total_on_duty_hours += time_to_window_end
@@ -892,10 +1025,12 @@ class TripCreateView(generics.CreateAPIView):
                             end_time = current_time + timedelta(hours=RESTART_HOURS)
                             if current_time < last_entry_end_time:
                                 current_time = last_entry_end_time
-                            current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                            coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                            # Interpoler les coordonnées pour la distance actuelle
+                            coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                            latitude = coords[0] if coords else None
+                            longitude = coords[1] if coords else None
                             print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, coords[0], coords[1])
+                            self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, latitude, longitude)
                             last_entry_end_time = end_time
                             current_time = end_time
                             total_on_duty_hours = 0
@@ -905,10 +1040,12 @@ class TripCreateView(generics.CreateAPIView):
                     end_time = current_time + timedelta(hours=MINIMUM_REST_HOURS)
                     if current_time < last_entry_end_time:
                         current_time = last_entry_end_time
-                    current_step = all_steps[min(current_step_index, len(all_steps) - 1)]
-                    coords = current_step['end_coords'] if current_step['end_coords'] else (None, None)
+                    # Interpoler les coordonnées pour la distance actuelle
+                    coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                    latitude = coords[0] if coords else None
+                    longitude = coords[1] if coords else None
                     print(f"Adding entry: SLEEPER_BERTH from {current_time} to {end_time} at {current_distance} miles")
-                    self.add_log_entry(log_entries, trip, current_time, end_time, 'SLEEPER_BERTH', "Repos de 10h après 11h de conduite", current_distance, coords[0], coords[1])
+                    self.add_log_entry(log_entries, trip, current_time, end_time, 'SLEEPER_BERTH', "Repos de 10h après 11h de conduite", current_distance, latitude, longitude)
                     last_entry_end_time = end_time
                     current_time = end_time
                     trip_state["last_duty_start_time"] = None
@@ -920,10 +1057,12 @@ class TripCreateView(generics.CreateAPIView):
                     buffer_end_time = current_time
                     if driving_buffer_start < last_entry_end_time:
                         driving_buffer_start = last_entry_end_time
-                    current_step = all_steps[-1] if all_steps else None
-                    coords = current_step['end_coords'] if current_step and current_step['end_coords'] else (None, None)
+                    # Interpoler les coordonnées pour la distance actuelle
+                    coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                    latitude = coords[0] if coords else None
+                    longitude = coords[1] if coords else None
                     print(f"Adding entry: DRIVING from {driving_buffer_start} to {buffer_end_time} at {current_distance} miles")
-                    self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', "Conduite", current_distance, coords[0], coords[1])
+                    self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', "Conduite", current_distance, latitude, longitude)
                     last_entry_end_time = buffer_end_time
                     driving_buffer_start = None
                     driving_buffer_minutes = 0
@@ -931,10 +1070,12 @@ class TripCreateView(generics.CreateAPIView):
                 end_time = current_time + timedelta(hours=RESTART_HOURS)
                 if current_time < last_entry_end_time:
                     current_time = last_entry_end_time
-                current_step = all_steps[-1] if all_steps else None
-                coords = current_step['end_coords'] if current_step and current_step['end_coords'] else (None, None)
+                # Interpoler les coordonnées pour la distance actuelle
+                coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                latitude = coords[0] if coords else None
+                longitude = coords[1] if coords else None
                 print(f"Adding entry: OFF_DUTY from {current_time} to {end_time} at {current_distance} miles")
-                self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, coords[0], coords[1])
+                self.add_log_entry(log_entries, trip, current_time, end_time, 'OFF_DUTY', "Redémarrage de 34 heures", current_distance, latitude, longitude)
                 last_entry_end_time = end_time
                 current_time = end_time
                 total_on_duty_hours = 0
@@ -947,10 +1088,12 @@ class TripCreateView(generics.CreateAPIView):
                         buffer_end_time = current_time
                         if driving_buffer_start < last_entry_end_time:
                             driving_buffer_start = last_entry_end_time
-                        current_step = all_steps[-1] if all_steps else None
-                        coords = current_step['end_coords'] if current_step and current_step['end_coords'] else (None, None)
+                        # Interpoler les coordonnées pour la distance actuelle
+                        coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                        latitude = coords[0] if coords else None
+                        longitude = coords[1] if coords else None
                         print(f"Adding entry: DRIVING from {driving_buffer_start} to {buffer_end_time} at {current_distance} miles")
-                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', "Conduite", current_distance, coords[0], coords[1])
+                        self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', "Conduite", current_distance, latitude, longitude)
                         last_entry_end_time = buffer_end_time
                         driving_buffer_start = None
                         driving_buffer_minutes = 0
@@ -958,10 +1101,12 @@ class TripCreateView(generics.CreateAPIView):
                     end_time = current_time + timedelta(hours=MINIMUM_REST_HOURS)
                     if current_time < last_entry_end_time:
                         current_time = last_entry_end_time
-                    current_step = all_steps[-1] if all_steps else None
-                    coords = current_step['end_coords'] if current_step and current_step['end_coords'] else (None, None)
+                    # Interpoler les coordonnées pour la distance actuelle
+                    coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                    latitude = coords[0] if coords else None
+                    longitude = coords[1] if coords else None
                     print(f"Adding entry: SLEEPER_BERTH from {current_time} to {end_time} at {current_distance} miles")
-                    self.add_log_entry(log_entries, trip, current_time, end_time, 'SLEEPER_BERTH', "Repos de 10h avant dépôt", current_distance, coords[0], coords[1])
+                    self.add_log_entry(log_entries, trip, current_time, end_time, 'SLEEPER_BERTH', "Repos de 10h avant dépôt", current_distance, latitude, longitude)
                     last_entry_end_time = end_time
                     current_time = end_time
                     trip_state["last_duty_start_time"] = None
@@ -970,10 +1115,12 @@ class TripCreateView(generics.CreateAPIView):
                 buffer_end_time = current_time
                 if driving_buffer_start < last_entry_end_time:
                     driving_buffer_start = last_entry_end_time
-                current_step = all_steps[-1] if all_steps else None
-                coords = current_step['end_coords'] if current_step and current_step['end_coords'] else (None, None)
+                # Interpoler les coordonnées pour la distance actuelle
+                coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+                latitude = coords[0] if coords else None
+                longitude = coords[1] if coords else None
                 print(f"Adding entry: DRIVING from {driving_buffer_start} to {buffer_end_time} at {current_distance} miles")
-                self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', "Conduite", current_distance, coords[0], coords[1])
+                self.add_log_entry(log_entries, trip, driving_buffer_start, buffer_end_time, 'DRIVING', "Conduite", current_distance, latitude, longitude)
                 last_entry_end_time = buffer_end_time
                 driving_buffer_start = None
                 driving_buffer_minutes = 0
@@ -981,10 +1128,12 @@ class TripCreateView(generics.CreateAPIView):
             dropoff_end_time = current_time + timedelta(hours=1)
             if current_time < last_entry_end_time:
                 current_time = last_entry_end_time
-            current_step = all_steps[-1] if all_steps else None
-            coords = current_step['end_coords'] if current_step and current_step['end_coords'] else (None, None)
+            # Interpoler les coordonnées pour la distance actuelle
+            coords = self.interpolate_coords(all_coords, all_distances, current_distance)
+            latitude = coords[0] if coords else None
+            longitude = coords[1] if coords else None
             print(f"Adding entry: ON_DUTY_NOT_DRIVING from {current_time} to {dropoff_end_time} at {current_distance} miles")
-            self.add_log_entry(log_entries, trip, current_time, dropoff_end_time, 'ON_DUTY_NOT_DRIVING', f"Dépôt à {trip.dropoff_location}", current_distance, coords[0], coords[1])
+            self.add_log_entry(log_entries, trip, current_time, dropoff_end_time, 'ON_DUTY_NOT_DRIVING', f"Dépôt à {trip.dropoff_location}", current_distance, latitude, longitude)
             last_entry_end_time = dropoff_end_time
             total_on_duty_hours += 1
 
