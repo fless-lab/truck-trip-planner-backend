@@ -489,10 +489,10 @@ class TripCreateView(generics.CreateAPIView):
                     pickup_end_time = current_time + timedelta(hours=1)
                     if current_time < last_entry_end_time:
                         current_time = last_entry_end_time
-                    # Interpoler les coordonnées pour la distance actuelle
-                    coords = self.interpolate_coords(all_coords, all_distances, current_distance)
-                    latitude = coords[0] if coords else None
-                    longitude = coords[1] if coords else None
+                    # Utiliser les coordonnées exactes de pickup_location (Chicago, IL) au lieu d'interpoler
+                    pickup_coords = CITIES_WITH_COORDS[trip.pickup_location]  # (41.8781, -87.6298) pour Chicago, IL
+                    latitude = pickup_coords[0]  # 41.8781
+                    longitude = pickup_coords[1]  # -87.6298
                     print(f"Adding entry: ON_DUTY_NOT_DRIVING from {current_time} to {pickup_end_time} at {current_distance} miles")
                     self.add_log_entry(log_entries, trip, current_time, pickup_end_time, 'ON_DUTY_NOT_DRIVING', f"Ramassage à {trip.pickup_location}", current_distance, latitude, longitude)
                     last_entry_end_time = pickup_end_time
